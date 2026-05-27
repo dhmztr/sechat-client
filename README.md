@@ -342,9 +342,3 @@ Not yet in stage to build working on client cryptography rn
 This is an early-stage research project. The cryptographic protocol has not been formally reviewed. The implementation is incomplete. Do not use sechat for sensitive communication.
 
 Contributions, protocol critique, and review are welcome.
-
----
-
-## License
-
-[choose a license]
