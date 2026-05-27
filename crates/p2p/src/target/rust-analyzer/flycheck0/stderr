@@ -1,0 +1,56 @@
+   0.259899329s  INFO prepare_target{force=false package_id=p2p v0.1.0 (/home/dhm/cybersec/programowanie/rust/sechat/client/crates/p2p) target="p2p"}: cargo::core::compiler::fingerprint: fingerprint error for p2p v0.1.0 (/home/dhm/cybersec/programowanie/rust/sechat/client/crates/p2p)/Check { test: false }/TargetInner { name_inferred: true, ..: lib_target("p2p", ["lib"], "/home/dhm/cybersec/programowanie/rust/sechat/client/crates/p2p/src/lib.rs", Edition2024) }
+   0.259920048s  INFO prepare_target{force=false package_id=p2p v0.1.0 (/home/dhm/cybersec/programowanie/rust/sechat/client/crates/p2p) target="p2p"}: cargo::core::compiler::fingerprint:     err: failed to read `/home/dhm/cybersec/programowanie/rust/sechat/client/target/debug/.fingerprint/p2p-0b6839d717b3ac25/lib-p2p`
+
+Caused by:
+    No such file or directory (os error 2)
+
+Stack backtrace:
+   0: <E as anyhow::context::ext::StdError>::ext_context
+   1: cargo_util::paths::read
+   2: cargo::core::compiler::fingerprint::prepare_target
+   3: cargo::core::compiler::compile
+   4: cargo::core::compiler::build_runner::BuildRunner::compile
+   5: cargo::ops::cargo_compile::compile_ws
+   6: cargo::ops::cargo_compile::compile_with_exec
+   7: cargo::ops::cargo_compile::compile
+   8: cargo::commands::check::exec
+   9: cargo::cli::Exec::exec
+  10: cargo::cli::main
+  11: cargo::main
+  12: std::sys::backtrace::__rust_begin_short_backtrace
+  13: std::rt::lang_start::{{closure}}
+  14: std::rt::lang_start_internal
+  15: main
+  16: __libc_start_call_main
+  17: __libc_start_main@@GLIBC_2.34
+  18: _start
+   0.263356285s  INFO prepare_target{force=false package_id=p2p v0.1.0 (/home/dhm/cybersec/programowanie/rust/sechat/client/crates/p2p) target="p2p"}: cargo::core::compiler::fingerprint: fingerprint error for p2p v0.1.0 (/home/dhm/cybersec/programowanie/rust/sechat/client/crates/p2p)/Check { test: true }/TargetInner { name_inferred: true, ..: lib_target("p2p", ["lib"], "/home/dhm/cybersec/programowanie/rust/sechat/client/crates/p2p/src/lib.rs", Edition2024) }
+   0.263368568s  INFO prepare_target{force=false package_id=p2p v0.1.0 (/home/dhm/cybersec/programowanie/rust/sechat/client/crates/p2p) target="p2p"}: cargo::core::compiler::fingerprint:     err: failed to read `/home/dhm/cybersec/programowanie/rust/sechat/client/target/debug/.fingerprint/p2p-4abf70be5b2d9d73/test-lib-p2p`
+
+Caused by:
+    No such file or directory (os error 2)
+
+Stack backtrace:
+   0: <E as anyhow::context::ext::StdError>::ext_context
+   1: cargo_util::paths::read
+   2: cargo::core::compiler::fingerprint::prepare_target
+   3: cargo::core::compiler::compile
+   4: cargo::core::compiler::build_runner::BuildRunner::compile
+   5: cargo::ops::cargo_compile::compile_ws
+   6: cargo::ops::cargo_compile::compile_with_exec
+   7: cargo::ops::cargo_compile::compile
+   8: cargo::commands::check::exec
+   9: cargo::cli::Exec::exec
+  10: cargo::cli::main
+  11: cargo::main
+  12: std::sys::backtrace::__rust_begin_short_backtrace
+  13: std::rt::lang_start::{{closure}}
+  14: std::rt::lang_start_internal
+  15: main
+  16: __libc_start_call_main
+  17: __libc_start_main@@GLIBC_2.34
+  18: _start
+    Checking p2p v0.1.0 (/home/dhm/cybersec/programowanie/rust/sechat/client/crates/p2p)
+error: could not compile `p2p` (lib) due to 2 previous errors; 3 warnings emitted
+warning: build failed, waiting for other jobs to finish...
+error: could not compile `p2p` (lib test) due to 2 previous errors; 3 warnings emitted

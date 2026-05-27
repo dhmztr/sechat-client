@@ -1,0 +1,21 @@
+[package]
+name = "crypto"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+rand_core = { version = "0.6", features = ["getrandom"] }
+ed25519-dalek = { version = "2.2.0", features = ["rand_core"] }
+x25519-dalek = { version = "2.0.1", features = ["serde", "static_secrets"] }
+chacha20poly1305 = "0.10.1"
+argon2 = "0.5.3"
+home = "0.5.12"
+zeroize = "1.8.2"
+hkdf = "0.13.0"
+sha2 = "0.11.0"
+hex = "0.4.3"
+hmac = "0.13.0"
+serde = { version = "1.0.228", features = ["derive"] }
+sled = "0.34.7"
+chrono = "0.4.44"
+rmp-serde = "1.3.1"

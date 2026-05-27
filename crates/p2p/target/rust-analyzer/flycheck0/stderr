@@ -1,0 +1,284 @@
+   0.222311806s  INFO prepare_target{force=false package_id=p2p v0.1.0 (/home/dhm/cybersec/programowanie/rust/sechat/client/crates/p2p) target="p2p"}: cargo::core::compiler::fingerprint: fingerprint error for p2p v0.1.0 (/home/dhm/cybersec/programowanie/rust/sechat/client/crates/p2p)/Check { test: false }/TargetInner { name: "p2p", doc: true, ..: with_path("/home/dhm/cybersec/programowanie/rust/sechat/client/crates/p2p/src/main.rs", Edition2024) }
+   0.222354031s  INFO prepare_target{force=false package_id=p2p v0.1.0 (/home/dhm/cybersec/programowanie/rust/sechat/client/crates/p2p) target="p2p"}: cargo::core::compiler::fingerprint:     err: failed to read `/home/dhm/cybersec/programowanie/rust/sechat/client/target/debug/.fingerprint/p2p-ca48855f35c95179/bin-p2p`
+
+Caused by:
+    No such file or directory (os error 2)
+
+Stack backtrace:
+   0: <E as anyhow::context::ext::StdError>::ext_context
+   1: cargo_util::paths::read
+   2: cargo::core::compiler::fingerprint::prepare_target
+   3: cargo::core::compiler::compile
+   4: cargo::core::compiler::build_runner::BuildRunner::compile
+   5: cargo::ops::cargo_compile::compile_ws
+   6: cargo::ops::cargo_compile::compile_with_exec
+   7: cargo::ops::cargo_compile::compile
+   8: cargo::commands::check::exec
+   9: cargo::cli::Exec::exec
+  10: cargo::cli::main
+  11: cargo::main
+  12: std::sys::backtrace::__rust_begin_short_backtrace
+  13: std::rt::lang_start::{{closure}}
+  14: std::rt::lang_start_internal
+  15: main
+  16: __libc_start_call_main
+  17: __libc_start_main@@GLIBC_2.34
+  18: _start
+   0.228913063s  INFO prepare_target{force=false package_id=serde v1.0.228 target="serde"}: cargo::core::compiler::fingerprint: fingerprint error for serde v1.0.228/Check { test: false }/TargetInner { ..: lib_target("serde", ["lib"], "/home/dhm/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/lib.rs", Edition2021) }
+   0.228934647s  INFO prepare_target{force=false package_id=serde v1.0.228 target="serde"}: cargo::core::compiler::fingerprint:     err: failed to read `/home/dhm/cybersec/programowanie/rust/sechat/client/target/debug/.fingerprint/serde-6b1955ddccec8193/lib-serde`
+
+Caused by:
+    No such file or directory (os error 2)
+
+Stack backtrace:
+   0: <E as anyhow::context::ext::StdError>::ext_context
+   1: cargo_util::paths::read
+   2: cargo::core::compiler::fingerprint::prepare_target
+   3: cargo::core::compiler::compile
+   4: cargo::core::compiler::compile
+   5: cargo::core::compiler::build_runner::BuildRunner::compile
+   6: cargo::ops::cargo_compile::compile_ws
+   7: cargo::ops::cargo_compile::compile_with_exec
+   8: cargo::ops::cargo_compile::compile
+   9: cargo::commands::check::exec
+  10: cargo::cli::Exec::exec
+  11: cargo::cli::main
+  12: cargo::main
+  13: std::sys::backtrace::__rust_begin_short_backtrace
+  14: std::rt::lang_start::{{closure}}
+  15: std::rt::lang_start_internal
+  16: main
+  17: __libc_start_call_main
+  18: __libc_start_main@@GLIBC_2.34
+  19: _start
+   0.230302514s  INFO prepare_target{force=false package_id=tokio v1.52.3 target="tokio"}: cargo::core::compiler::fingerprint: fingerprint error for tokio v1.52.3/Check { test: false }/TargetInner { ..: lib_target("tokio", ["lib"], "/home/dhm/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.52.3/src/lib.rs", Edition2021) }
+   0.230322796s  INFO prepare_target{force=false package_id=tokio v1.52.3 target="tokio"}: cargo::core::compiler::fingerprint:     err: failed to read `/home/dhm/cybersec/programowanie/rust/sechat/client/target/debug/.fingerprint/tokio-d84b09dd9d32f9c9/lib-tokio`
+
+Caused by:
+    No such file or directory (os error 2)
+
+Stack backtrace:
+   0: <E as anyhow::context::ext::StdError>::ext_context
+   1: cargo_util::paths::read
+   2: cargo::core::compiler::fingerprint::prepare_target
+   3: cargo::core::compiler::compile
+   4: cargo::core::compiler::compile
+   5: cargo::core::compiler::build_runner::BuildRunner::compile
+   6: cargo::ops::cargo_compile::compile_ws
+   7: cargo::ops::cargo_compile::compile_with_exec
+   8: cargo::ops::cargo_compile::compile
+   9: cargo::commands::check::exec
+  10: cargo::cli::Exec::exec
+  11: cargo::cli::main
+  12: cargo::main
+  13: std::sys::backtrace::__rust_begin_short_backtrace
+  14: std::rt::lang_start::{{closure}}
+  15: std::rt::lang_start_internal
+  16: main
+  17: __libc_start_call_main
+  18: __libc_start_main@@GLIBC_2.34
+  19: _start
+   0.231633054s  INFO prepare_target{force=false package_id=tokio-macros v2.7.0 target="tokio_macros"}: cargo::core::compiler::fingerprint: fingerprint error for tokio-macros v2.7.0/Build/TargetInner { for_host: true, proc_macro: true, ..: lib_target("tokio_macros", ["proc-macro"], "/home/dhm/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-macros-2.7.0/src/lib.rs", Edition2021) }
+   0.231653816s  INFO prepare_target{force=false package_id=tokio-macros v2.7.0 target="tokio_macros"}: cargo::core::compiler::fingerprint:     err: failed to read `/home/dhm/cybersec/programowanie/rust/sechat/client/target/debug/.fingerprint/tokio-macros-c7324ff599996ac9/lib-tokio_macros`
+
+Caused by:
+    No such file or directory (os error 2)
+
+Stack backtrace:
+   0: <E as anyhow::context::ext::StdError>::ext_context
+   1: cargo_util::paths::read
+   2: cargo::core::compiler::fingerprint::prepare_target
+   3: cargo::core::compiler::compile
+   4: cargo::core::compiler::compile
+   5: cargo::core::compiler::compile
+   6: cargo::core::compiler::build_runner::BuildRunner::compile
+   7: cargo::ops::cargo_compile::compile_ws
+   8: cargo::ops::cargo_compile::compile_with_exec
+   9: cargo::ops::cargo_compile::compile
+  10: cargo::commands::check::exec
+  11: cargo::cli::Exec::exec
+  12: cargo::cli::main
+  13: cargo::main
+  14: std::sys::backtrace::__rust_begin_short_backtrace
+  15: std::rt::lang_start::{{closure}}
+  16: std::rt::lang_start_internal
+  17: main
+  18: __libc_start_call_main
+  19: __libc_start_main@@GLIBC_2.34
+  20: _start
+   0.231998181s  INFO prepare_target{force=false package_id=x25519-dalek v2.0.1 target="x25519_dalek"}: cargo::core::compiler::fingerprint: fingerprint error for x25519-dalek v2.0.1/Check { test: false }/TargetInner { name_inferred: true, ..: lib_target("x25519_dalek", ["lib"], "/home/dhm/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/x25519-dalek-2.0.1/src/lib.rs", Edition2021) }
+   0.232013976s  INFO prepare_target{force=false package_id=x25519-dalek v2.0.1 target="x25519_dalek"}: cargo::core::compiler::fingerprint:     err: failed to read `/home/dhm/cybersec/programowanie/rust/sechat/client/target/debug/.fingerprint/x25519-dalek-f68125304891597c/lib-x25519_dalek`
+
+Caused by:
+    No such file or directory (os error 2)
+
+Stack backtrace:
+   0: <E as anyhow::context::ext::StdError>::ext_context
+   1: cargo_util::paths::read
+   2: cargo::core::compiler::fingerprint::prepare_target
+   3: cargo::core::compiler::compile
+   4: cargo::core::compiler::compile
+   5: cargo::core::compiler::build_runner::BuildRunner::compile
+   6: cargo::ops::cargo_compile::compile_ws
+   7: cargo::ops::cargo_compile::compile_with_exec
+   8: cargo::ops::cargo_compile::compile
+   9: cargo::commands::check::exec
+  10: cargo::cli::Exec::exec
+  11: cargo::cli::main
+  12: cargo::main
+  13: std::sys::backtrace::__rust_begin_short_backtrace
+  14: std::rt::lang_start::{{closure}}
+  15: std::rt::lang_start_internal
+  16: main
+  17: __libc_start_call_main
+  18: __libc_start_main@@GLIBC_2.34
+  19: _start
+   0.232351381s  INFO prepare_target{force=false package_id=curve25519-dalek v4.1.3 target="curve25519_dalek"}: cargo::core::compiler::fingerprint: fingerprint error for curve25519-dalek v4.1.3/Check { test: false }/TargetInner { name_inferred: true, ..: lib_target("curve25519_dalek", ["lib"], "/home/dhm/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/curve25519-dalek-4.1.3/src/lib.rs", Edition2021) }
+   0.232366344s  INFO prepare_target{force=false package_id=curve25519-dalek v4.1.3 target="curve25519_dalek"}: cargo::core::compiler::fingerprint:     err: failed to read `/home/dhm/cybersec/programowanie/rust/sechat/client/target/debug/.fingerprint/curve25519-dalek-25517f39e32203ee/lib-curve25519_dalek`
+
+Caused by:
+    No such file or directory (os error 2)
+
+Stack backtrace:
+   0: <E as anyhow::context::ext::StdError>::ext_context
+   1: cargo_util::paths::read
+   2: cargo::core::compiler::fingerprint::prepare_target
+   3: cargo::core::compiler::compile
+   4: cargo::core::compiler::compile
+   5: cargo::core::compiler::compile
+   6: cargo::core::compiler::build_runner::BuildRunner::compile
+   7: cargo::ops::cargo_compile::compile_ws
+   8: cargo::ops::cargo_compile::compile_with_exec
+   9: cargo::ops::cargo_compile::compile
+  10: cargo::commands::check::exec
+  11: cargo::cli::Exec::exec
+  12: cargo::cli::main
+  13: cargo::main
+  14: std::sys::backtrace::__rust_begin_short_backtrace
+  15: std::rt::lang_start::{{closure}}
+  16: std::rt::lang_start_internal
+  17: main
+  18: __libc_start_call_main
+  19: __libc_start_main@@GLIBC_2.34
+  20: _start
+   0.240146475s  INFO prepare_target{force=false package_id=curve25519-dalek v4.1.3 target="build-script-build"}: cargo::core::compiler::fingerprint: fingerprint error for curve25519-dalek v4.1.3/RunCustomBuild/TargetInner { ..: custom_build_target("build-script-build", "/home/dhm/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/curve25519-dalek-4.1.3/build.rs", Edition2021) }
+   0.240186487s  INFO prepare_target{force=false package_id=curve25519-dalek v4.1.3 target="build-script-build"}: cargo::core::compiler::fingerprint:     err: failed to read `/home/dhm/cybersec/programowanie/rust/sechat/client/target/debug/.fingerprint/curve25519-dalek-79e1e532a80a6020/run-build-script-build-script-build`
+
+Caused by:
+    No such file or directory (os error 2)
+
+Stack backtrace:
+   0: <E as anyhow::context::ext::StdError>::ext_context
+   1: cargo_util::paths::read
+   2: cargo::core::compiler::fingerprint::prepare_target
+   3: cargo::core::compiler::custom_build::build_work
+   4: cargo::core::compiler::custom_build::prepare
+   5: cargo::core::compiler::compile
+   6: cargo::core::compiler::compile
+   7: cargo::core::compiler::compile
+   8: cargo::core::compiler::compile
+   9: cargo::core::compiler::build_runner::BuildRunner::compile
+  10: cargo::ops::cargo_compile::compile_ws
+  11: cargo::ops::cargo_compile::compile_with_exec
+  12: cargo::ops::cargo_compile::compile
+  13: cargo::commands::check::exec
+  14: cargo::cli::Exec::exec
+  15: cargo::cli::main
+  16: cargo::main
+  17: std::sys::backtrace::__rust_begin_short_backtrace
+  18: std::rt::lang_start::{{closure}}
+  19: std::rt::lang_start_internal
+  20: main
+  21: __libc_start_call_main
+  22: __libc_start_main@@GLIBC_2.34
+  23: _start
+   0.240615194s  INFO prepare_target{force=false package_id=curve25519-dalek v4.1.3 target="build-script-build"}: cargo::core::compiler::fingerprint: fingerprint error for curve25519-dalek v4.1.3/Build/TargetInner { ..: custom_build_target("build-script-build", "/home/dhm/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/curve25519-dalek-4.1.3/build.rs", Edition2021) }
+   0.240636367s  INFO prepare_target{force=false package_id=curve25519-dalek v4.1.3 target="build-script-build"}: cargo::core::compiler::fingerprint:     err: failed to read `/home/dhm/cybersec/programowanie/rust/sechat/client/target/debug/.fingerprint/curve25519-dalek-25f10659aa8be409/build-script-build-script-build`
+
+Caused by:
+    No such file or directory (os error 2)
+
+Stack backtrace:
+   0: <E as anyhow::context::ext::StdError>::ext_context
+   1: cargo_util::paths::read
+   2: cargo::core::compiler::fingerprint::prepare_target
+   3: cargo::core::compiler::compile
+   4: cargo::core::compiler::compile
+   5: cargo::core::compiler::compile
+   6: cargo::core::compiler::compile
+   7: cargo::core::compiler::compile
+   8: cargo::core::compiler::build_runner::BuildRunner::compile
+   9: cargo::ops::cargo_compile::compile_ws
+  10: cargo::ops::cargo_compile::compile_with_exec
+  11: cargo::ops::cargo_compile::compile
+  12: cargo::commands::check::exec
+  13: cargo::cli::Exec::exec
+  14: cargo::cli::main
+  15: cargo::main
+  16: std::sys::backtrace::__rust_begin_short_backtrace
+  17: std::rt::lang_start::{{closure}}
+  18: std::rt::lang_start_internal
+  19: main
+  20: __libc_start_call_main
+  21: __libc_start_main@@GLIBC_2.34
+  22: _start
+   0.241428108s  INFO prepare_target{force=false package_id=zeroize v1.8.2 target="zeroize"}: cargo::core::compiler::fingerprint: fingerprint error for zeroize v1.8.2/Check { test: false }/TargetInner { ..: lib_target("zeroize", ["lib"], "/home/dhm/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/zeroize-1.8.2/src/lib.rs", Edition2021) }
+   0.241459177s  INFO prepare_target{force=false package_id=zeroize v1.8.2 target="zeroize"}: cargo::core::compiler::fingerprint:     err: failed to read `/home/dhm/cybersec/programowanie/rust/sechat/client/target/debug/.fingerprint/zeroize-0f1ae210895caa18/lib-zeroize`
+
+Caused by:
+    No such file or directory (os error 2)
+
+Stack backtrace:
+   0: <E as anyhow::context::ext::StdError>::ext_context
+   1: cargo_util::paths::read
+   2: cargo::core::compiler::fingerprint::prepare_target
+   3: cargo::core::compiler::compile
+   4: cargo::core::compiler::compile
+   5: cargo::core::compiler::compile
+   6: cargo::core::compiler::compile
+   7: cargo::core::compiler::build_runner::BuildRunner::compile
+   8: cargo::ops::cargo_compile::compile_ws
+   9: cargo::ops::cargo_compile::compile_with_exec
+  10: cargo::ops::cargo_compile::compile
+  11: cargo::commands::check::exec
+  12: cargo::cli::Exec::exec
+  13: cargo::cli::main
+  14: cargo::main
+  15: std::sys::backtrace::__rust_begin_short_backtrace
+  16: std::rt::lang_start::{{closure}}
+  17: std::rt::lang_start_internal
+  18: main
+  19: __libc_start_call_main
+  20: __libc_start_main@@GLIBC_2.34
+  21: _start
+   0.242249676s  INFO prepare_target{force=false package_id=p2p v0.1.0 (/home/dhm/cybersec/programowanie/rust/sechat/client/crates/p2p) target="p2p"}: cargo::core::compiler::fingerprint: fingerprint error for p2p v0.1.0 (/home/dhm/cybersec/programowanie/rust/sechat/client/crates/p2p)/Check { test: true }/TargetInner { name: "p2p", doc: true, ..: with_path("/home/dhm/cybersec/programowanie/rust/sechat/client/crates/p2p/src/main.rs", Edition2024) }
+   0.242290860s  INFO prepare_target{force=false package_id=p2p v0.1.0 (/home/dhm/cybersec/programowanie/rust/sechat/client/crates/p2p) target="p2p"}: cargo::core::compiler::fingerprint:     err: failed to read `/home/dhm/cybersec/programowanie/rust/sechat/client/target/debug/.fingerprint/p2p-8b309193eb641fdf/test-bin-p2p`
+
+Caused by:
+    No such file or directory (os error 2)
+
+Stack backtrace:
+   0: <E as anyhow::context::ext::StdError>::ext_context
+   1: cargo_util::paths::read
+   2: cargo::core::compiler::fingerprint::prepare_target
+   3: cargo::core::compiler::compile
+   4: cargo::core::compiler::build_runner::BuildRunner::compile
+   5: cargo::ops::cargo_compile::compile_ws
+   6: cargo::ops::cargo_compile::compile_with_exec
+   7: cargo::ops::cargo_compile::compile
+   8: cargo::commands::check::exec
+   9: cargo::cli::Exec::exec
+  10: cargo::cli::main
+  11: cargo::main
+  12: std::sys::backtrace::__rust_begin_short_backtrace
+  13: std::rt::lang_start::{{closure}}
+  14: std::rt::lang_start_internal
+  15: main
+  16: __libc_start_call_main
+  17: __libc_start_main@@GLIBC_2.34
+  18: _start
+   Compiling curve25519-dalek v4.1.3
+   Compiling tokio-macros v2.7.0
+    Checking zeroize v1.8.2
+    Checking serde v1.0.228
+    Checking tokio v1.52.3
