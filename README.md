@@ -318,9 +318,16 @@ notify-rust           desktop notifications
         └── chat.log        encrypted message history
 ```
 
-### Build & run
+### Stage
 
-Not yet in stage to build working on client cryptography rn
+Stage 1 (in progress): cryptographic layer
+- [x] Identity keypair generation and encrypted persistence
+- [x] Key derivation architecture (HKDF domain separation)
+- [x] encrypt_data / decrypt_data implementation
+- [x] Session key establishment
+- [x] Read sled database for each peer
+- [ ] 
+- [ ] Server transport
 
 ---
 
