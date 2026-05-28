@@ -321,14 +321,16 @@ notify-rust           desktop notifications
 ### Stage
 
 Stage 1 (in progress): cryptographic layer
+
 - [x] Identity keypair generation and encrypted persistence
 - [x] Key derivation architecture (HKDF domain separation)
 - [x] encrypt_data / decrypt_data implementation
 - [x] Session key establishment
 - [x] Read each client public key and derive session/storage key
-- [x] Handle safe private key storage and loading 
-- [ ] Messsage saving and reading for each peer
+- [x] Handle safe private key storage and loading
+- [x] Messsage saving and reading for each peer
 - [ ] Server transport
+
 ---
 
 ## Design Trade-offs

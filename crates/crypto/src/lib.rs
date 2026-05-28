@@ -1,6 +1,6 @@
 use argon2::{Argon2, password_hash};
 use chacha20poly1305::{
-    ChaCha20Poly1305, Key, KeyInit, Nonce,
+    ChaCha20Poly1305, ChaChaPoly1305, Key, KeyInit, Nonce,
     aead::{Aead, AeadCore},
 };
 use chrono::Utc;
@@ -11,6 +11,7 @@ use home::home_dir;
 use rand_core::{OsRng, RngCore};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use sled::{Db, IVec};
 use std::sync::OnceLock;
 use std::{fmt, fs::remove_dir_all};
 use std::{
@@ -286,7 +287,7 @@ pub fn load_peer_data(hash: &[u8]) -> Result<PublicKey, CryptoErrors> {
     Ok(PublicKey::from(pub_bytes))
 }
 
-pub fn encrypt_message(message: String, sessionkey: Key, counter: u64) -> Vec<u8> {
+pub fn encrypt_message_for_chat(message: String, sessionkey: Key, counter: u64) -> Vec<u8> {
     let hk = Hkdf::<Sha256>::new(None, sessionkey.as_slice());
     let mut message_key = [0u8; 32];
     hk.expand(b"message", &mut message_key).unwrap();
@@ -306,7 +307,7 @@ fn nonce_for_message(base: &[u8; 12], counter: u64) -> Nonce {
     Nonce::from(n)
 }
 
-pub fn decrypt_message(
+pub fn decrypt_message_from_chat(
     message: Vec<u8>,
     sessionkey: Key,
     counter: u64,
@@ -416,10 +417,81 @@ pub fn derive_session_key(
         .map_err(|_| CryptoErrors::CryptographicError);
     Ok(Key::from(session_key))
 }
-pub fn load_peer_chat(key: &PublicKey, storagekey: Key) -> Messages {
+pub fn load_peer_chat(key: &PublicKey, storagekey: Key) -> Result<Messages, CryptoErrors> {
     let hex_path = hex::encode(Sha256::digest(key.as_bytes()));
-    let path = peers_dir().as_path().join(hex_path).join("chat.db");
-    match sled::open(path) {
-        Ok(db) => {}
+    let path = peers_dir().as_path().join(&hex_path).join("chat.db");
+    let mut msgvec: Vec<Message> = vec![];
+    let db = sled::open(path).map_err(|_| CryptoErrors::CorruptedFile)?;
+    let to_remove: Vec<IVec> = db
+        .iter()
+        .filter_map(|item| {
+            let (key, value) = item.ok()?;
+
+            match decrypt_message_stored(&value.to_vec(), &storagekey) {
+                Ok(item) => match rmp_serde::from_slice::<Message>(&item) {
+                    Ok(msg) => {
+                        msgvec.push(msg);
+                        None
+                    }
+
+                    Err(_) => Some(key),
+                },
+                Err(_) => Some(key),
+            }
+        })
+        .collect();
+    for key in to_remove {
+        db.remove(key).ok();
     }
+    Ok(Messages {
+        data: msgvec,
+        peer: hex_path,
+    })
+}
+pub fn insert_message() {}
+
+pub fn insert_message_stored(msg: Message, storagekey: Key, db: Db) -> Result<(), CryptoErrors> {
+    let encrypted_data = encrypt_message_stored(msg, &storagekey)?;
+    let counter: u64 = match db.last().map_err(|_| CryptoErrors::CorruptedFile)? {
+        Some((key, _)) => {
+            let last: u64 = u64::from_be_bytes(
+                key.as_ref()
+                    .try_into()
+                    .map_err(|_| CryptoErrors::CorruptedFile)?,
+            );
+            last + 1
+        }
+        None => 0,
+    };
+
+    let ivec: IVec = encrypted_data.into();
+    db.insert((counter).to_be_bytes(), ivec)
+        .map_err(|_| CryptoErrors::CorruptedFile)?;
+    Ok(())
+}
+
+pub fn decrypt_message_stored(data: &Vec<u8>, storagekey: &Key) -> Result<Vec<u8>, CryptoErrors> {
+    if data.len() < 12 {
+        return Err(CryptoErrors::CorruptedFile);
+    }
+    let cipher: ChaCha20Poly1305 = ChaCha20Poly1305::new(storagekey);
+    let nonce = &data[0..12];
+    let ciphertext = &data[12..];
+    let nonce = Nonce::from_slice(nonce);
+    if let Ok(plainbytes) = cipher.decrypt(nonce, ciphertext) {
+        Ok(plainbytes)
+    } else {
+        Err(CryptoErrors::CryptographicError)
+    }
+}
+
+pub fn encrypt_message_stored(msg: Message, storagekey: &Key) -> Result<Vec<u8>, CryptoErrors> {
+    let cipher: ChaCha20Poly1305 = ChaCha20Poly1305::new(storagekey);
+    let nonce = ChaCha20Poly1305::generate_nonce(&mut OsRng);
+    let bytes = rmp_serde::to_vec(&msg).map_err(|_| CryptoErrors::CryptographicError)?;
+    let ciphertext = cipher
+        .encrypt(&nonce, bytes.as_slice())
+        .map_err(|_| CryptoErrors::CryptographicError)?;
+    let data: Vec<u8> = [nonce.as_slice(), ciphertext.as_slice()].concat();
+    Ok(data)
 }
