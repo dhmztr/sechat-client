@@ -418,7 +418,7 @@ pub fn derive_session_key(
 }
 pub fn load_peer_chat(key: &PublicKey, storagekey: Key) -> Messages {
     let hex_path = hex::encode(Sha256::digest(key.as_bytes()));
-    let path = peers_dir().as_path().join(hex_path).join("chat.peer");
+    let path = peers_dir().as_path().join(hex_path).join("chat.db");
     match sled::open(path) {
         Ok(db) => {}
     }
