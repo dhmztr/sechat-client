@@ -1,5 +1,5 @@
-   0.307472700s  INFO prepare_target{force=false package_id=crypto v0.1.0 (/home/dhm/cybersec/programowanie/rust/sechat/client/crates/crypto) target="crypto"}: cargo::core::compiler::fingerprint: fingerprint error for crypto v0.1.0 (/home/dhm/cybersec/programowanie/rust/sechat/client/crates/crypto)/Check { test: false }/TargetInner { name_inferred: true, ..: lib_target("crypto", ["lib"], "/home/dhm/cybersec/programowanie/rust/sechat/client/crates/crypto/src/lib.rs", Edition2024) }
-   0.307504320s  INFO prepare_target{force=false package_id=crypto v0.1.0 (/home/dhm/cybersec/programowanie/rust/sechat/client/crates/crypto) target="crypto"}: cargo::core::compiler::fingerprint:     err: failed to read `/home/dhm/cybersec/programowanie/rust/sechat/client/target/debug/.fingerprint/crypto-377920ef1f19e2c5/lib-crypto`
+   0.225704377s  INFO prepare_target{force=false package_id=crypto v0.1.0 (/home/dhm/cybersec/programowanie/rust/sechat/client/crates/crypto) target="crypto"}: cargo::core::compiler::fingerprint: fingerprint error for crypto v0.1.0 (/home/dhm/cybersec/programowanie/rust/sechat/client/crates/crypto)/Check { test: false }/TargetInner { name_inferred: true, ..: lib_target("crypto", ["lib"], "/home/dhm/cybersec/programowanie/rust/sechat/client/crates/crypto/src/lib.rs", Edition2024) }
+   0.225728722s  INFO prepare_target{force=false package_id=crypto v0.1.0 (/home/dhm/cybersec/programowanie/rust/sechat/client/crates/crypto) target="crypto"}: cargo::core::compiler::fingerprint:     err: failed to read `/home/dhm/cybersec/programowanie/rust/sechat/client/target/debug/.fingerprint/crypto-377920ef1f19e2c5/lib-crypto`
 
 Caused by:
     No such file or directory (os error 2)
@@ -24,8 +24,8 @@ Stack backtrace:
   16: __libc_start_call_main
   17: __libc_start_main@@GLIBC_2.34
   18: _start
-   0.313211728s  INFO prepare_target{force=false package_id=crypto v0.1.0 (/home/dhm/cybersec/programowanie/rust/sechat/client/crates/crypto) target="crypto"}: cargo::core::compiler::fingerprint: fingerprint error for crypto v0.1.0 (/home/dhm/cybersec/programowanie/rust/sechat/client/crates/crypto)/Check { test: true }/TargetInner { name_inferred: true, ..: lib_target("crypto", ["lib"], "/home/dhm/cybersec/programowanie/rust/sechat/client/crates/crypto/src/lib.rs", Edition2024) }
-   0.313229942s  INFO prepare_target{force=false package_id=crypto v0.1.0 (/home/dhm/cybersec/programowanie/rust/sechat/client/crates/crypto) target="crypto"}: cargo::core::compiler::fingerprint:     err: failed to read `/home/dhm/cybersec/programowanie/rust/sechat/client/target/debug/.fingerprint/crypto-7d6ecc8af02eef93/test-lib-crypto`
+   0.231577686s  INFO prepare_target{force=false package_id=crypto v0.1.0 (/home/dhm/cybersec/programowanie/rust/sechat/client/crates/crypto) target="crypto"}: cargo::core::compiler::fingerprint: fingerprint error for crypto v0.1.0 (/home/dhm/cybersec/programowanie/rust/sechat/client/crates/crypto)/Check { test: true }/TargetInner { name_inferred: true, ..: lib_target("crypto", ["lib"], "/home/dhm/cybersec/programowanie/rust/sechat/client/crates/crypto/src/lib.rs", Edition2024) }
+   0.231593115s  INFO prepare_target{force=false package_id=crypto v0.1.0 (/home/dhm/cybersec/programowanie/rust/sechat/client/crates/crypto) target="crypto"}: cargo::core::compiler::fingerprint:     err: failed to read `/home/dhm/cybersec/programowanie/rust/sechat/client/target/debug/.fingerprint/crypto-7d6ecc8af02eef93/test-lib-crypto`
 
 Caused by:
     No such file or directory (os error 2)
@@ -50,8 +50,8 @@ Stack backtrace:
   16: __libc_start_call_main
   17: __libc_start_main@@GLIBC_2.34
   18: _start
-   0.326756757s  INFO prepare_target{force=false package_id=p2p v0.1.0 (/home/dhm/cybersec/programowanie/rust/sechat/client/crates/p2p) target="p2p"}: cargo::core::compiler::fingerprint: fingerprint error for p2p v0.1.0 (/home/dhm/cybersec/programowanie/rust/sechat/client/crates/p2p)/Check { test: false }/TargetInner { name_inferred: true, ..: lib_target("p2p", ["lib"], "/home/dhm/cybersec/programowanie/rust/sechat/client/crates/p2p/src/lib.rs", Edition2024) }
-   0.326777205s  INFO prepare_target{force=false package_id=p2p v0.1.0 (/home/dhm/cybersec/programowanie/rust/sechat/client/crates/p2p) target="p2p"}: cargo::core::compiler::fingerprint:     err: failed to read `/home/dhm/cybersec/programowanie/rust/sechat/client/target/debug/.fingerprint/p2p-70562abc1f766af0/lib-p2p`
+   0.244512366s  INFO prepare_target{force=false package_id=p2p v0.1.0 (/home/dhm/cybersec/programowanie/rust/sechat/client/crates/p2p) target="p2p"}: cargo::core::compiler::fingerprint: fingerprint error for p2p v0.1.0 (/home/dhm/cybersec/programowanie/rust/sechat/client/crates/p2p)/Check { test: false }/TargetInner { name_inferred: true, ..: lib_target("p2p", ["lib"], "/home/dhm/cybersec/programowanie/rust/sechat/client/crates/p2p/src/lib.rs", Edition2024) }
+   0.244528787s  INFO prepare_target{force=false package_id=p2p v0.1.0 (/home/dhm/cybersec/programowanie/rust/sechat/client/crates/p2p) target="p2p"}: cargo::core::compiler::fingerprint:     err: failed to read `/home/dhm/cybersec/programowanie/rust/sechat/client/target/debug/.fingerprint/p2p-70562abc1f766af0/lib-p2p`
 
 Caused by:
     No such file or directory (os error 2)
@@ -76,8 +76,8 @@ Stack backtrace:
   16: __libc_start_call_main
   17: __libc_start_main@@GLIBC_2.34
   18: _start
-   0.327201882s  INFO prepare_target{force=false package_id=p2p v0.1.0 (/home/dhm/cybersec/programowanie/rust/sechat/client/crates/p2p) target="p2p"}: cargo::core::compiler::fingerprint: fingerprint error for p2p v0.1.0 (/home/dhm/cybersec/programowanie/rust/sechat/client/crates/p2p)/Check { test: true }/TargetInner { name_inferred: true, ..: lib_target("p2p", ["lib"], "/home/dhm/cybersec/programowanie/rust/sechat/client/crates/p2p/src/lib.rs", Edition2024) }
-   0.327209667s  INFO prepare_target{force=false package_id=p2p v0.1.0 (/home/dhm/cybersec/programowanie/rust/sechat/client/crates/p2p) target="p2p"}: cargo::core::compiler::fingerprint:     err: failed to read `/home/dhm/cybersec/programowanie/rust/sechat/client/target/debug/.fingerprint/p2p-5b83ce4a08504e70/test-lib-p2p`
+   0.244854489s  INFO prepare_target{force=false package_id=p2p v0.1.0 (/home/dhm/cybersec/programowanie/rust/sechat/client/crates/p2p) target="p2p"}: cargo::core::compiler::fingerprint: fingerprint error for p2p v0.1.0 (/home/dhm/cybersec/programowanie/rust/sechat/client/crates/p2p)/Check { test: true }/TargetInner { name_inferred: true, ..: lib_target("p2p", ["lib"], "/home/dhm/cybersec/programowanie/rust/sechat/client/crates/p2p/src/lib.rs", Edition2024) }
+   0.244868415s  INFO prepare_target{force=false package_id=p2p v0.1.0 (/home/dhm/cybersec/programowanie/rust/sechat/client/crates/p2p) target="p2p"}: cargo::core::compiler::fingerprint:     err: failed to read `/home/dhm/cybersec/programowanie/rust/sechat/client/target/debug/.fingerprint/p2p-5b83ce4a08504e70/test-lib-p2p`
 
 Caused by:
     No such file or directory (os error 2)
@@ -103,6 +103,6 @@ Stack backtrace:
   17: __libc_start_main@@GLIBC_2.34
   18: _start
     Checking crypto v0.1.0 (/home/dhm/cybersec/programowanie/rust/sechat/client/crates/crypto)
-error: could not compile `crypto` (lib test) due to 1 previous error; 2 warnings emitted
-warning: build failed, waiting for other jobs to finish...
 error: could not compile `crypto` (lib) due to 1 previous error; 2 warnings emitted
+warning: build failed, waiting for other jobs to finish...
+error: could not compile `crypto` (lib test) due to 1 previous error; 2 warnings emitted
