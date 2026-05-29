@@ -22,7 +22,7 @@ use std::{
 };
 static SECHAT_DIR: OnceLock<PathBuf> = OnceLock::new();
 static PEERS_DIR: OnceLock<PathBuf> = OnceLock::new();
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, PartialEq, Debug)]
 enum Author {
     You,
     Peer,
@@ -31,7 +31,7 @@ pub struct Messages {
     data: Vec<Message>,
     peer: String,
 }
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, PartialEq, Debug)]
 pub struct Message {
     author: Author,
     text: String,
@@ -371,7 +371,7 @@ pub fn verify_challenge(
         .verify(bits, signature)
         .map_err(|_| CryptoErrors::CryptographicError)
 }
-pub fn sign_challenge(signing: SigningKey) -> (Signature, KeyType) {
+pub fn sign_challenge(signing: &SigningKey) -> (Signature, KeyType) {
     let mut bytes: KeyType = [0u8; 32];
     OsRng.fill_bytes(&mut bytes);
     let signature = signing.sign(&bytes);
@@ -451,7 +451,7 @@ pub fn load_peer_chat(key: &PublicKey, storagekey: Key) -> Result<Messages, Cryp
 pub fn insert_message() {}
 
 pub fn insert_message_stored(msg: Message, storagekey: Key, db: Db) -> Result<(), CryptoErrors> {
-    let encrypted_data = encrypt_message_stored(msg, &storagekey)?;
+    let encrypted_data = encrypt_message_stored(&msg, &storagekey)?;
     let counter: u64 = match db.last().map_err(|_| CryptoErrors::CorruptedFile)? {
         Some((key, _)) => {
             let last: u64 = u64::from_be_bytes(
@@ -485,7 +485,7 @@ pub fn decrypt_message_stored(data: &Vec<u8>, storagekey: &Key) -> Result<Vec<u8
     }
 }
 
-pub fn encrypt_message_stored(msg: Message, storagekey: &Key) -> Result<Vec<u8>, CryptoErrors> {
+pub fn encrypt_message_stored(msg: &Message, storagekey: &Key) -> Result<Vec<u8>, CryptoErrors> {
     let cipher: ChaCha20Poly1305 = ChaCha20Poly1305::new(storagekey);
     let nonce = ChaCha20Poly1305::generate_nonce(&mut OsRng);
     let bytes = rmp_serde::to_vec(&msg).map_err(|_| CryptoErrors::CryptographicError)?;
@@ -494,4 +494,27 @@ pub fn encrypt_message_stored(msg: Message, storagekey: &Key) -> Result<Vec<u8>,
         .map_err(|_| CryptoErrors::CryptographicError)?;
     let data: Vec<u8> = [nonce.as_slice(), ciphertext.as_slice()].concat();
     Ok(data)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn test_encryption_chat() {
+        let (private, public) = generate_x25519();
+        let sessionkey = derive_session_key(&private, &public).unwrap();
+        let encrypted_data = encrypt_message_for_chat("Hi".to_owned(), sessionkey, 0);
+        let decrypted_data = decrypt_message_from_chat(encrypted_data, sessionkey, 0).unwrap();
+        assert_eq!(decrypted_data, "Hi".to_owned())
+    }
+    #[test]
+    fn test_encryption_storage() {
+        let (private, public) = generate_x25519();
+        let storagekey = load_storage_key(&public, &private).unwrap();
+        let msg = Message::new("Hi".to_owned(), Author::You);
+        let encrypted_data = encrypt_message_stored(&msg, &storagekey).unwrap();
+        let decrypted_data = decrypt_message_stored(&encrypted_data, &storagekey).unwrap();
+        let final_item = rmp_serde::from_slice::<Message>(&decrypted_data).unwrap();
+        assert_eq!(msg, final_item)
+    }
 }
