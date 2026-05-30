@@ -1,14 +1,14 @@
-use serde::{Serialize,Deserialize};
+use serde::{Deserialize, Serialize};
 #[derive(Serialize)]
 pub enum ClientMessage {
     Auth {
-        pub_key: [u8; 32],         // Ed25519 verifying key
-        signature: Vec<u8>
+        pub_key: [u8; 32], // Ed25519 verifying key
+        signature: Vec<u8>,
     },
 
     Announce {
-        token: [u8; 32],           // HMAC(presence_key, ts/15*15)
-        ip_port: String,           // gdzie hole punch
+        token: [u8; 32], // HMAC(presence_key, ts/15*15)
+        ip_port: String, // gdzie hole punch
     },
 
     Unannounce {
@@ -16,8 +16,8 @@ pub enum ClientMessage {
     },
 
     SendBlob {
-        recipient_hash: [u8; 32],  // sha256(odbiorca_pub)
-        blob: Vec<u8>,             // zaszyfrowana treść
+        recipient_hash: [u8; 32], // sha256(odbiorca_pub)
+        blob: Vec<u8>,            // zaszyfrowana treść
     },
 
     AckBlob {
@@ -29,11 +29,14 @@ pub enum ClientMessage {
     },
 }
 
-
 #[derive(Serialize, Deserialize)]
 pub enum ServerMessage {
-    AuthOk,
-    AuthFailed { reason: String },
+    AuthOk {
+        ip_port: String,
+    }
+    AuthFailed {
+        reason: String,
+    },
 
     PendingBlob {
         blob_id: String,
@@ -58,5 +61,7 @@ pub enum ServerMessage {
         token: [u8; 32],
     },
 
-    Error { reason: String },
+    Error {
+        reason: String,
+    },
 }
