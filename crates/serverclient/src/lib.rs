@@ -2,6 +2,7 @@ use crypto::*;
 use ed25519_dalek::*;
 use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
+use serde_json;
 use sha2::{Digest, Sha256};
 use tokio::net::TcpStream;
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream, connect_async};
@@ -9,31 +10,6 @@ use x25519_dalek::*;
 mod structs;
 use chrono::Utc;
 use structs::*;
-pub enum Payload {
-    OfflineMessage,
-    Announce,
-}
-pub enum ClientErrors {
-    ConnectionError,
-    DwarfPacket,
-}
-#[derive(Serialize)]
-pub struct ClientToServer {
-    payload: ClientMessage,
-    timestamp: i64,
-}
-#[derive(Deserialize)]
-pub struct ServerToClient {
-    payload: ServerMessage,
-    timestamp: i64,
-}
-
-impl ClientToServer {
-    fn new(payload: ClientMessage) -> Self {
-        let timestamp = Utc::now().timestamp();
-        ClientToServer { payload, timestamp }
-    }
-}
 type WsStream = WebSocketStream<MaybeTlsStream<TcpStream>>;
 async fn connect_to_server(server_address: String) -> Result<WsStream, ClientErrors> {
     let url = format!("wss://{}/ws", server_address);
@@ -50,32 +26,34 @@ async fn server_inital_handshake(
     server_address: String,
 ) -> Result<(), ClientErrors> {
     let connection = connect_to_server(server_address).await?;
-    let auth_message = ClientToServer::new(generate_authenticate_message(public.to_bytes(), singing)?);
+    let auth_message =
+        ClientToServer::new(generate_authenticate_message(public.to_bytes(), singing)?);
     connection
         .send(serde_json::to_string(&auth_message).unwrap().into())
         .await
         .map_err(|_| ClientErrors::ConnectionError)?;
-    let response = connection
-        .next()
-        .await
-        .ok_or(ClientErrors::ConnectionError)?
-        .map_err(|_| ClientErrors::ConnectionError)?;
-    let server_message = parse_server_message(&response.to_string())?;
+    let response = receive_message(&mut connection).await?;
     match server_message.payload {
-        ServerMessage::AuthFailed { reason } => {
-            eprintln!("Authentication failed: {}", reason);
-            Err(ClientErrors::ConnectionError)
-        }
-        ServerMessage::PendingBlob { blob_id, blob, timestamp }
-        ServerMessage::AuthOk { ip_port} => {
-            peers.iter().for_each(|peer_pub| {
-                let announce_message =
-                    generate_announce_message(privkey, peer_pub, Utc::now().timestamp() as u64, ip_port.clone());
-                    connection
-    
-
-    );
+        ServerMessage::AuthOk { observed_address } => loop {
+            let msg = receive_message(&mut connection).await?;
+            match msg.payload {
+                ServerMessage::PendingBlob {
+                    blob_id,
+                    blob,
+                    timestamp,
+                } => {
+                    let decrypted_blob =
+                        decrypt_blob(blob, &privkey).map_err(|_| ClientErrors::DwarfPacket)?;
+                    let deserialized_blob: BlobPayload = rmp_serde::from_slice(&decrypted_blob)
+                        .map_err(|_| ClientErrors::DwarfPacket)?;
+                    handle_blob(deserialized_blob).await?;
+                    ack_blob(blob_id, &mut connection).await?;
+                }
+            }
+        },
+    }
 }
+
 fn generate_authenticate_message(
     public: [u8; 32],
     singing: &SigningKey,
@@ -127,4 +105,47 @@ pub fn generate_ack_blob(blob_id: String) -> ClientMessage {
 }
 pub fn parse_server_message(msg: &str) -> Result<ServerToClient, ClientErrors> {
     serde_json::from_str(msg).map_err(|_| ClientErrors::DwarfPacket)
+}
+pub async fn receive_message(
+    &mut connection: &mut WsStream,
+) -> Result<ServerToClient, ClientErrors> {
+    let response = connection
+        .next()
+        .await
+        .ok_or(ClientErrors::ConnectionError)?
+        .map_err(|_| ClientErrors::ConnectionError)?;
+    parse_server_message(&response.to_string())
+}
+pub async fn ack_blob(blob_id: String, connection: &mut WsStream) -> Result<(), ClientErrors> {
+    let ack_message = generate_ack_blob(blob_id);
+    connection
+        .send(
+            serde_json::to_string(&ClientToServer::new(ack_message))
+                .unwrap()
+                .into(),
+        )
+        .await
+        .map_err(|_| ClientErrors::ConnectionError)
+}
+pub async fn handle_blob(blob: BlobPayload) -> Result<(), ClientErrors> {
+    match blob {
+        BlobPayload::OfflineMessage {
+            sender_x25519_pub,
+            timestamp,
+            ciphertext,
+            signature,
+        } => {
+            let public_peer = PublicKey::from(sender_x25519_pub);
+            if !load_peers()
+                .map_err(|_| ClientErrors::DwarfPacket)?
+                .contains(&public_peer)
+            {
+                return Err(ClientErrors::BadPacket);
+            };
+            let stored_chat =
+                load_peer_chat_file(&public_peer).map_err(|_| ClientErrors::DwarfPacket)?;
+            insert_blob_to_chat(ciphertext, &stored_chat);
+        }
+    }
+    Ok(())
 }

@@ -342,7 +342,7 @@ pub fn purge(path: Option<PathBuf>, mut privkey: StaticSecret) -> Result<(), Cry
 
 pub fn presence_token(
     privkey: &StaticSecret,
-    peer_pub: PublicKey,
+    peer_pub: &PublicKey,
     timestamp: u64,
 ) -> Result<KeyType, CryptoErrors> {
     let shared = privkey.diffie_hellman(&peer_pub);
@@ -417,7 +417,7 @@ pub fn derive_session_key(
         .map_err(|_| CryptoErrors::CryptographicError);
     Ok(Key::from(session_key))
 }
-pub fn load_peer_chat(key: &PublicKey, storagekey: Key) -> Result<Messages, CryptoErrors> {
+pub fn load_peer_chat_messages(key: &PublicKey, storagekey: Key) -> Result<Messages, CryptoErrors> {
     let hex_path = hex::encode(Sha256::digest(key.as_bytes()));
     let path = peers_dir().as_path().join(&hex_path).join("chat.db");
     let mut msgvec: Vec<Message> = vec![];
@@ -448,28 +448,39 @@ pub fn load_peer_chat(key: &PublicKey, storagekey: Key) -> Result<Messages, Cryp
         peer: hex_path,
     })
 }
-pub fn insert_message() {}
-
-pub fn insert_message_stored(msg: Message, storagekey: Key, db: Db) -> Result<(), CryptoErrors> {
-    let encrypted_data = encrypt_message_stored(&msg, &storagekey)?;
-    let counter: u64 = match db.last().map_err(|_| CryptoErrors::CorruptedFile)? {
+pub fn find_counter(db: &Db) -> Result<u64, CryptoErrors> {
+    match db.last().map_err(|_| CryptoErrors::CorruptedFile)? {
         Some((key, _)) => {
             let last: u64 = u64::from_be_bytes(
                 key.as_ref()
                     .try_into()
                     .map_err(|_| CryptoErrors::CorruptedFile)?,
             );
-            last + 1
+            Ok(last + 1)
         }
-        None => 0,
-    };
-
+        None => Ok(0),
+    }
+}
+pub fn insert_message_stored(msg: Message, storagekey: Key, db: Db) -> Result<(), CryptoErrors> {
+    let encrypted_data = encrypt_message_stored(&msg, &storagekey)?;
+    let counter = find_counter(&db)?;
     let ivec: IVec = encrypted_data.into();
     db.insert((counter).to_be_bytes(), ivec)
         .map_err(|_| CryptoErrors::CorruptedFile)?;
     Ok(())
 }
-
+pub fn load_peer_chat_file(peer_pub: &PublicKey) -> Result<Db, CryptoErrors> {
+    let hex_path = hex::encode(Sha256::digest(peer_pub.as_bytes()));
+    let path = peers_dir().as_path().join(&hex_path).join("chat.db");
+    sled::open(path).map_err(|_| CryptoErrors::CorruptedFile)
+}
+pub fn insert_blob_to_chat(blob: Vec<u8>, db: &Db) -> Result<(), CryptoErrors> {
+    let counter = find_counter(db)?;
+    let ivec: IVec = blob.into();
+    db.insert((counter).to_be_bytes(), ivec)
+        .map_err(|_| CryptoErrors::CorruptedFile)?;
+    Ok(())
+}
 pub fn decrypt_message_stored(data: &Vec<u8>, storagekey: &Key) -> Result<Vec<u8>, CryptoErrors> {
     if data.len() < 12 {
         return Err(CryptoErrors::CorruptedFile);
@@ -494,6 +505,26 @@ pub fn encrypt_message_stored(msg: &Message, storagekey: &Key) -> Result<Vec<u8>
         .map_err(|_| CryptoErrors::CryptographicError)?;
     let data: Vec<u8> = [nonce.as_slice(), ciphertext.as_slice()].concat();
     Ok(data)
+}
+pub fn decrypt_blob(blob: Vec<u8>, privkey: &StaticSecret) -> Result<Vec<u8>, CryptoErrors> {
+    if blob.len() < 44 {
+        return Err(CryptoErrors::CorruptedFile);
+    }
+    let eph_pub =
+        PublicKey::from(<KeyType>::try_from(&blob[..32]).map_err(|_| CryptoErrors::CorruptedFile)?);
+    let nonce = &blob[32..44];
+    let ciphertext = &blob[44..];
+    let shared = privkey.diffie_hellman(&eph_pub);
+    let hk = Hkdf::<Sha256>::new(None, shared.as_bytes());
+    let mut key: KeyType = [0u8; 32];
+    hk.expand(b"blob", &mut key)
+        .map_err(|_| CryptoErrors::CryptographicError)?;
+    let cipher = ChaCha20Poly1305::new(Key::from_slice(&key));
+    let nonce = Nonce::from_slice(nonce);
+    let decrypted = cipher
+        .decrypt(&nonce, ciphertext)
+        .map_err(|_| CryptoErrors::CryptographicError)?;
+    Ok(decrypted)
 }
 
 #[cfg(test)]
