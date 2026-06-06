@@ -98,10 +98,14 @@ pub enum BlobPayload {
     FriendRequest {
         sender_x25519_pub: [u8; 32],
         sender_ed25519_verifying: [u8; 32],
+        bits: Vec<u8>,
+        signature: Vec<u8>,
     },
     FriendAccept {
         sender_x25519_pub: [u8; 32],
-        sender_ed25519_verifying: [u8; 32],
+    },
+    FriendDenied {
+        sender_x25519_pub: [u8; 32],
     },
     OfflineMessage {
         sender_x25519_pub: [u8; 32],

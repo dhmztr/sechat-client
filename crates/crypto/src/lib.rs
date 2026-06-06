@@ -22,7 +22,8 @@ use std::{
 };
 static SECHAT_DIR: OnceLock<PathBuf> = OnceLock::new();
 static PEERS_DIR: OnceLock<PathBuf> = OnceLock::new();
-#[derive(Serialize, Deserialize, PartialEq, Debug)]
+static PENDING_DIR: OnceLock<PathBuf> = OnceLock::new();
+#[derive(Serialize, Deserialize, Clone, PartialEq, Debug)]
 enum Author {
     You,
     Peer,
@@ -31,7 +32,12 @@ pub struct Messages {
     data: Vec<Message>,
     peer: String,
 }
-#[derive(Serialize, Deserialize, PartialEq, Debug)]
+#[derive(PartialEq)]
+pub struct PeerPublic {
+    pub public: PublicKey,
+    pub verifying: VerifyingKey,
+}
+#[derive(Serialize, Clone, Deserialize, PartialEq, Debug)]
 pub struct Message {
     author: Author,
     text: String,
@@ -53,6 +59,9 @@ pub fn sechat_dir() -> &'static PathBuf {
 
 pub fn peers_dir() -> &'static PathBuf {
     PEERS_DIR.get_or_init(|| sechat_dir().join("peers"))
+}
+pub fn pending_dir() -> &'static PathBuf {
+    PENDING_DIR.get_or_init(|| sechat_dir().join("pending"))
 }
 pub type KeyType = [u8; 32];
 pub type HmacSha256 = Hmac<Sha256>;
@@ -241,8 +250,9 @@ pub fn read_file_to_buffer(filename: PathBuf, sizeinbytes: usize) -> Result<Vec<
     Ok(buf)
 }
 
-fn initialize_peer(
+pub fn initialize_peer(
     peer_pub: &PublicKey,
+    peer_veryfing: &VerifyingKey,
     privkey: &StaticSecret,
 ) -> Result<(Key, Key), CryptoErrors> {
     let sechat_path = peers_dir().join(hex::encode(Sha256::digest(peer_pub.as_bytes())));
@@ -254,8 +264,9 @@ fn initialize_peer(
         .truncate(true)
         .open(sechat_path.join("peer.pub"))
         .map_err(|e| CryptoErrors::Other(e))?;
+    let bytes_to_write: Vec<u8> = [peer_pub.to_bytes(), peer_veryfing.to_bytes()].concat();
     peer_pub_f
-        .write_all(peer_pub.as_bytes())
+        .write_all(bytes_to_write.as_slice())
         .map_err(|e| CryptoErrors::Other(e))?;
     peer_pub_f.flush().map_err(|e| CryptoErrors::Other(e))?;
 
@@ -273,18 +284,25 @@ fn initialize_peer(
     Ok((Key::from(session_key), Key::from(storage_key)))
 }
 
-pub fn load_peer_data(hash: &[u8]) -> Result<PublicKey, CryptoErrors> {
-    let hex = hex::encode(hash);
+pub fn load_peer_data(pubkey: &PublicKey) -> Result<PeerPublic, CryptoErrors> {
+    let hex = hex::encode(Sha256::digest(pubkey.as_bytes()));
     let peer_dir = peers_dir().join(&hex);
     if !peer_dir.is_dir() {
         return Err(CryptoErrors::NotFound(hex));
     }
     let buf = read_file_to_buffer(peer_dir.join("peer.pub"), 32)?;
-    let pub_bytes: KeyType = buf
-        .as_slice()
+    let pub_bytes: KeyType = buf[..32]
         .try_into()
         .map_err(|_| CryptoErrors::CorruptedFile)?;
-    Ok(PublicKey::from(pub_bytes))
+    let verifying_bytes: KeyType = buf[32..64]
+        .try_into()
+        .map_err(|_| CryptoErrors::CorruptedFile)?;
+    let public = PublicKey::from(pub_bytes);
+    let verifying = VerifyingKey::from_bytes(&verifying_bytes);
+    Ok(PeerPublic {
+        public,
+        verifying: verifying.map_err(|_| CryptoErrors::CorruptedFile)?,
+    })
 }
 
 pub fn encrypt_message_for_chat(message: String, sessionkey: Key, counter: u64) -> Vec<u8> {
@@ -377,7 +395,7 @@ pub fn sign_challenge(signing: &SigningKey) -> (Signature, KeyType) {
     let signature = signing.sign(&bytes);
     (signature, bytes)
 }
-pub fn load_peers() -> Result<Vec<PublicKey>, CryptoErrors> {
+pub fn load_peers() -> Result<Vec<PeerPublic>, CryptoErrors> {
     let peersdir = peers_dir();
     peersdir
         .read_dir()
@@ -391,18 +409,25 @@ pub fn load_peers() -> Result<Vec<PublicKey>, CryptoErrors> {
                     .unwrap(),
             )
         })?
-        .map(|entry| -> Result<PublicKey, CryptoErrors> {
+        .map(|entry| -> Result<PeerPublic, CryptoErrors> {
             let peerdir = entry.map_err(CryptoErrors::Other)?.path();
             let mut f = fs::OpenOptions::new()
                 .read(true)
                 .open(peerdir.join("peer.pub"))
                 .map_err(CryptoErrors::Other)?;
-            let mut buf: KeyType = [0u8; 32];
-            f.read_exact(&mut buf).map_err(|e| match e.kind() {
-                std::io::ErrorKind::UnexpectedEof => CryptoErrors::CorruptedFile,
-                _ => CryptoErrors::Other(e),
-            })?;
-            Ok(PublicKey::from(buf))
+            let mut buf = [0u8; 64];
+            f.read_exact(&mut buf).map_err(CryptoErrors::Other)?;
+            let pub_bytes: KeyType = buf[..32]
+                .try_into()
+                .map_err(|_| CryptoErrors::CorruptedFile)?;
+            let verifying_bytes: KeyType = buf[32..64]
+                .try_into()
+                .map_err(|_| CryptoErrors::CorruptedFile)?;
+            Ok(PeerPublic {
+                public: PublicKey::from(pub_bytes),
+                verifying: VerifyingKey::from_bytes(&verifying_bytes)
+                    .map_err(|_| CryptoErrors::CorruptedFile)?,
+            })
         })
         .collect::<Result<Vec<_>, _>>()
 }
@@ -527,6 +552,82 @@ pub fn decrypt_blob(blob: Vec<u8>, privkey: &StaticSecret) -> Result<Vec<u8>, Cr
     Ok(decrypted)
 }
 
+pub fn insert_waiting_friend_request(peer_pub: &PublicKey) -> Result<(), CryptoErrors> {
+    let path = sechat_dir().join("friend_requests.db");
+    let db = sled::open(path).map_err(|_| CryptoErrors::CorruptedFile)?;
+    let hex = hex::encode(Sha256::digest(peer_pub.as_bytes()));
+    let count = find_counter(&db)?;
+    db.insert(count.to_be_bytes(), hex.as_bytes())
+        .map_err(|_| CryptoErrors::CorruptedFile)?;
+    Ok(())
+}
+pub fn check_if_friend_waiting(peer_pub: &PublicKey) -> Result<bool, CryptoErrors> {
+    let path = sechat_dir().join("friend_requests.db");
+    let db = sled::open(path).map_err(|_| CryptoErrors::CorruptedFile)?;
+    if db
+        .iter()
+        .filter(|item| {
+            if let Ok((_, value)) = item {
+                value.as_ref() == hex::encode(Sha256::digest(peer_pub.as_bytes())).as_bytes()
+            } else {
+                false
+            }
+        })
+        .count()
+        > 0
+    {
+        Ok(true)
+    } else {
+        Ok(false)
+    }
+}
+
+pub fn purge_peer_chat(peer_pub: &PublicKey) -> Result<(), CryptoErrors> {
+    let hex_path = hex::encode(Sha256::digest(peer_pub.as_bytes()));
+    let path = peers_dir().as_path().join(&hex_path);
+    remove_dir_all(path).map_err(CryptoErrors::Other)
+}
+pub fn create_pending_chat(peer_pub: &PublicKey, verif: &VerifyingKey) -> Result<(), CryptoErrors> {
+    let hex_path = hex::encode(Sha256::digest(peer_pub.as_bytes()));
+    let path = pending_dir().as_path().join(&hex_path);
+    let bytes_to_write: Vec<u8> = [peer_pub.to_bytes(), verif.to_bytes()].concat();
+    fs::write(path, bytes_to_write).map_err(CryptoErrors::Other)?;
+    Ok(())
+}
+
+pub fn move_from_pending_to_peers(peer_pub: &PublicKey) -> Result<(), CryptoErrors> {
+    let hex_path = hex::encode(Sha256::digest(peer_pub.as_bytes()));
+    let pending_path = pending_dir().as_path().join(&hex_path);
+    if !pending_path.exists() {
+        return Err(CryptoErrors::NotFound(hex_path));
+    }
+    let mut buf = [0u8; 64];
+    let mut file = OpenOptions::new()
+        .read(true)
+        .open(&pending_path)
+        .map_err(CryptoErrors::Other)?;
+    file.read_exact(&mut buf).map_err(CryptoErrors::Other)?;
+    let peer_path = peers_dir().as_path().join(&hex_path);
+    fs::create_dir_all(&peer_path).map_err(CryptoErrors::Other)?;
+    let mut peer_pub_f = OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .open(peer_path.join("peer.pub"))
+        .map_err(CryptoErrors::Other)?;
+    peer_pub_f.write_all(&buf).map_err(CryptoErrors::Other)?;
+    peer_pub_f.flush().map_err(CryptoErrors::Other)?;
+    fs::remove_file(pending_path).map_err(CryptoErrors::Other)?;
+    Ok(())
+}
+pub fn denied_friend_request(peer_pub: &PublicKey) -> Result<(), CryptoErrors> {
+    let hex_path = hex::encode(Sha256::digest(peer_pub.as_bytes()));
+    let pending_path = pending_dir().as_path().join(&hex_path);
+    if pending_path.exists() {
+        fs::remove_file(pending_path).map_err(CryptoErrors::Other)?;
+    }
+    Ok(())
+}
 #[cfg(test)]
 mod tests {
     use super::*;

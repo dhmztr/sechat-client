@@ -1,10 +1,16 @@
+use std::sync::OnceLock;
+
 use crypto::*;
+
 use ed25519_dalek::*;
 use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 use serde_json;
 use sha2::{Digest, Sha256};
-use tokio::net::TcpStream;
+use tokio::{
+    io::{AsyncReadExt, stdin},
+    net::TcpStream,
+};
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream, connect_async};
 use x25519_dalek::*;
 mod structs;
@@ -18,6 +24,7 @@ async fn connect_to_server(server_address: String) -> Result<WsStream, ClientErr
         .map_err(|_| ClientErrors::ConnectionError)?;
     Ok(ws)
 }
+
 async fn server_inital_handshake(
     public: &PublicKey,
     singing: &SigningKey,
@@ -46,7 +53,7 @@ async fn server_inital_handshake(
                         decrypt_blob(blob, &privkey).map_err(|_| ClientErrors::DwarfPacket)?;
                     let deserialized_blob: BlobPayload = rmp_serde::from_slice(&decrypted_blob)
                         .map_err(|_| ClientErrors::DwarfPacket)?;
-                    handle_blob(deserialized_blob).await?;
+                    handle_blob(deserialized_blob, &privkey).await?;
                     ack_blob(blob_id, &mut connection).await?;
                 }
             }
@@ -127,7 +134,7 @@ pub async fn ack_blob(blob_id: String, connection: &mut WsStream) -> Result<(), 
         .await
         .map_err(|_| ClientErrors::ConnectionError)
 }
-pub async fn handle_blob(blob: BlobPayload) -> Result<(), ClientErrors> {
+pub async fn handle_blob(blob: BlobPayload, privkey: &StaticSecret) -> Result<(), ClientErrors> {
     match blob {
         BlobPayload::OfflineMessage {
             sender_x25519_pub,
@@ -136,16 +143,84 @@ pub async fn handle_blob(blob: BlobPayload) -> Result<(), ClientErrors> {
             signature,
         } => {
             let public_peer = PublicKey::from(sender_x25519_pub);
+            let peer_data = load_peer_data(&public_peer).map_err(|_| ClientErrors::DwarfPacket)?;
             if !load_peers()
                 .map_err(|_| ClientErrors::DwarfPacket)?
-                .contains(&public_peer)
+                .contains(&peer_data)
             {
                 return Err(ClientErrors::BadPacket);
             };
+            let sig = Signature::from_slice(signature.as_slice())
+                .map_err(|_| ClientErrors::DwarfPacket)?;
+            let verif = peer_data.verifying;
+            let bits_to_verify = [ciphertext.as_slice(), &timestamp.to_le_bytes()].concat();
+            if !verify_challenge(verif, &ciphertext, &sig).is_ok() {
+                return Err(ClientErrors::BadPacket);
+            }
             let stored_chat =
                 load_peer_chat_file(&public_peer).map_err(|_| ClientErrors::DwarfPacket)?;
             insert_blob_to_chat(ciphertext, &stored_chat);
         }
+        BlobPayload::FriendRequest {
+            sender_ed25519_verifying,
+            sender_x25519_pub,
+            bits,
+            signature,
+        } => {
+            let public_peer = PublicKey::from(sender_x25519_pub);
+            let verif = VerifyingKey::from_bytes(&sender_ed25519_verifying).unwrap();
+            let pb = PeerPublic {
+                public: public_peer,
+                verifying: verif,
+            };
+            let sig: [u8; 64] = signature
+                .try_into()
+                .map_err(|_| ClientErrors::DwarfPacket)?;
+            let signature = Signature::from_bytes(&sig);
+            if load_peers().unwrap().contains(&pb)
+                || !verify_challenge(verif, bits.as_slice(), &signature).is_ok()
+            {
+                return Err(ClientErrors::BadPacket);
+            } else {
+                handle_friend_request(&public_peer, &verif, &privkey);
+            }
+        }
+        BlobPayload::Purge {
+            sender_x25519_pub,
+            new_x25519_pub,
+            new_ed25519_verifying,
+        } => {
+            let public_peer = PublicKey::from(sender_x25519_pub);
+            if load_peer_data(&public_peer).is_ok() {
+                purge_peer_chat(&public_peer).map_err(|_| ClientErrors::DwarfPacket)?;
+            }
+        }
+        BlobPayload::FriendAccept { sender_x25519_pub } => {
+            let public_peer = PublicKey::from(sender_x25519_pub);
+            if move_from_pending_to_peers(&public_peer).is_ok() {
+            } else {
+                return Err(ClientErrors::DwarfPacket);
+            }
+        }
+        BlobPayload::FriendDenied { sender_x25519_pub } => {
+            let public_peer = PublicKey::from(sender_x25519_pub);
+            if denied_friend_request(&public_peer).is_ok() {
+            } else {
+                return Err(ClientErrors::DwarfPacket);
+            }
+        }
     }
+
     Ok(())
+}
+
+pub fn handle_friend_request(&pubkey: &PublicKey, verif: &VerifyingKey, privkey: &StaticSecret) {
+    println!("You have received a friend request. Do you want to accept it? (y/n)");
+    let mut input = String::new();
+    std::io::stdin().read_line(&mut input).unwrap();
+    if input.trim().to_lowercase() == "y" {
+        println!("Friend request accepted.");
+    } else {
+        println!("Friend request rejected.");
+    }
 }
