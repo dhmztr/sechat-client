@@ -1,5 +1,5 @@
-   0.205159931s  INFO prepare_target{force=false package_id=p2p v0.1.0 (/home/dhm/cybersec/programowanie/rust/sechat/client/crates/p2p) target="p2p"}: cargo::core::compiler::fingerprint: fingerprint error for p2p v0.1.0 (/home/dhm/cybersec/programowanie/rust/sechat/client/crates/p2p)/Check { test: false }/TargetInner { name_inferred: true, ..: lib_target("p2p", ["lib"], "/home/dhm/cybersec/programowanie/rust/sechat/client/crates/p2p/src/lib.rs", Edition2024) }
-   0.205182493s  INFO prepare_target{force=false package_id=p2p v0.1.0 (/home/dhm/cybersec/programowanie/rust/sechat/client/crates/p2p) target="p2p"}: cargo::core::compiler::fingerprint:     err: failed to read `/home/dhm/cybersec/programowanie/rust/sechat/client/target/debug/.fingerprint/p2p-70562abc1f766af0/lib-p2p`
+   0.207824045s  INFO prepare_target{force=false package_id=p2p v0.1.0 (/home/dhm/cybersec/programowanie/rust/sechat/client/crates/p2p) target="p2p"}: cargo::core::compiler::fingerprint: fingerprint error for p2p v0.1.0 (/home/dhm/cybersec/programowanie/rust/sechat/client/crates/p2p)/Check { test: false }/TargetInner { name_inferred: true, ..: lib_target("p2p", ["lib"], "/home/dhm/cybersec/programowanie/rust/sechat/client/crates/p2p/src/lib.rs", Edition2024) }
+   0.207846597s  INFO prepare_target{force=false package_id=p2p v0.1.0 (/home/dhm/cybersec/programowanie/rust/sechat/client/crates/p2p) target="p2p"}: cargo::core::compiler::fingerprint:     err: failed to read `/home/dhm/cybersec/programowanie/rust/sechat/client/target/debug/.fingerprint/p2p-70562abc1f766af0/lib-p2p`
 
 Caused by:
     No such file or directory (os error 2)
@@ -24,8 +24,8 @@ Stack backtrace:
   16: __libc_start_call_main
   17: __libc_start_main@@GLIBC_2.34
   18: _start
-   0.208007151s  INFO prepare_target{force=false package_id=p2p v0.1.0 (/home/dhm/cybersec/programowanie/rust/sechat/client/crates/p2p) target="p2p"}: cargo::core::compiler::fingerprint: fingerprint error for p2p v0.1.0 (/home/dhm/cybersec/programowanie/rust/sechat/client/crates/p2p)/Check { test: true }/TargetInner { name_inferred: true, ..: lib_target("p2p", ["lib"], "/home/dhm/cybersec/programowanie/rust/sechat/client/crates/p2p/src/lib.rs", Edition2024) }
-   0.208020386s  INFO prepare_target{force=false package_id=p2p v0.1.0 (/home/dhm/cybersec/programowanie/rust/sechat/client/crates/p2p) target="p2p"}: cargo::core::compiler::fingerprint:     err: failed to read `/home/dhm/cybersec/programowanie/rust/sechat/client/target/debug/.fingerprint/p2p-5b83ce4a08504e70/test-lib-p2p`
+   0.210703870s  INFO prepare_target{force=false package_id=p2p v0.1.0 (/home/dhm/cybersec/programowanie/rust/sechat/client/crates/p2p) target="p2p"}: cargo::core::compiler::fingerprint: fingerprint error for p2p v0.1.0 (/home/dhm/cybersec/programowanie/rust/sechat/client/crates/p2p)/Check { test: true }/TargetInner { name_inferred: true, ..: lib_target("p2p", ["lib"], "/home/dhm/cybersec/programowanie/rust/sechat/client/crates/p2p/src/lib.rs", Edition2024) }
+   0.210718838s  INFO prepare_target{force=false package_id=p2p v0.1.0 (/home/dhm/cybersec/programowanie/rust/sechat/client/crates/p2p) target="p2p"}: cargo::core::compiler::fingerprint:     err: failed to read `/home/dhm/cybersec/programowanie/rust/sechat/client/target/debug/.fingerprint/p2p-5b83ce4a08504e70/test-lib-p2p`
 
 Caused by:
     No such file or directory (os error 2)
@@ -50,62 +50,20 @@ Stack backtrace:
   16: __libc_start_call_main
   17: __libc_start_main@@GLIBC_2.34
   18: _start
-   0.208839849s  INFO prepare_target{force=false package_id=serverclient v0.1.0 (/home/dhm/cybersec/programowanie/rust/sechat/client/crates/serverclient) target="serverclient"}: cargo::core::compiler::fingerprint: fingerprint error for serverclient v0.1.0 (/home/dhm/cybersec/programowanie/rust/sechat/client/crates/serverclient)/Check { test: false }/TargetInner { name_inferred: true, ..: lib_target("serverclient", ["lib"], "/home/dhm/cybersec/programowanie/rust/sechat/client/crates/serverclient/src/lib.rs", Edition2024) }
-   0.208848755s  INFO prepare_target{force=false package_id=serverclient v0.1.0 (/home/dhm/cybersec/programowanie/rust/sechat/client/crates/serverclient) target="serverclient"}: cargo::core::compiler::fingerprint:     err: failed to read `/home/dhm/cybersec/programowanie/rust/sechat/client/target/debug/.fingerprint/serverclient-00c1652c0b5e65d1/lib-serverclient`
-
-Caused by:
-    No such file or directory (os error 2)
-
-Stack backtrace:
-   0: <E as anyhow::context::ext::StdError>::ext_context
-   1: cargo_util::paths::read
-   2: cargo::core::compiler::fingerprint::prepare_target
-   3: cargo::core::compiler::compile
-   4: cargo::core::compiler::build_runner::BuildRunner::compile
-   5: cargo::ops::cargo_compile::compile_ws
-   6: cargo::ops::cargo_compile::compile_with_exec
-   7: cargo::ops::cargo_compile::compile
-   8: cargo::commands::check::exec
-   9: cargo::cli::Exec::exec
-  10: cargo::cli::main
-  11: cargo::main
-  12: std::sys::backtrace::__rust_begin_short_backtrace
-  13: std::rt::lang_start::{{closure}}
-  14: std::rt::lang_start_internal
-  15: main
-  16: __libc_start_call_main
-  17: __libc_start_main@@GLIBC_2.34
-  18: _start
-   0.209803342s  INFO prepare_target{force=false package_id=serverclient v0.1.0 (/home/dhm/cybersec/programowanie/rust/sechat/client/crates/serverclient) target="serverclient"}: cargo::core::compiler::fingerprint: fingerprint error for serverclient v0.1.0 (/home/dhm/cybersec/programowanie/rust/sechat/client/crates/serverclient)/Check { test: true }/TargetInner { name_inferred: true, ..: lib_target("serverclient", ["lib"], "/home/dhm/cybersec/programowanie/rust/sechat/client/crates/serverclient/src/lib.rs", Edition2024) }
-   0.209812049s  INFO prepare_target{force=false package_id=serverclient v0.1.0 (/home/dhm/cybersec/programowanie/rust/sechat/client/crates/serverclient) target="serverclient"}: cargo::core::compiler::fingerprint:     err: failed to read `/home/dhm/cybersec/programowanie/rust/sechat/client/target/debug/.fingerprint/serverclient-98efda2becd068fb/test-lib-serverclient`
-
-Caused by:
-    No such file or directory (os error 2)
-
-Stack backtrace:
-   0: <E as anyhow::context::ext::StdError>::ext_context
-   1: cargo_util::paths::read
-   2: cargo::core::compiler::fingerprint::prepare_target
-   3: cargo::core::compiler::compile
-   4: cargo::core::compiler::build_runner::BuildRunner::compile
-   5: cargo::ops::cargo_compile::compile_ws
-   6: cargo::ops::cargo_compile::compile_with_exec
-   7: cargo::ops::cargo_compile::compile
-   8: cargo::commands::check::exec
-   9: cargo::cli::Exec::exec
-  10: cargo::cli::main
-  11: cargo::main
-  12: std::sys::backtrace::__rust_begin_short_backtrace
-  13: std::rt::lang_start::{{closure}}
-  14: std::rt::lang_start_internal
-  15: main
-  16: __libc_start_call_main
-  17: __libc_start_main@@GLIBC_2.34
-  18: _start
+   0.211569175s  INFO prepare_target{force=false package_id=serverclient v0.1.0 (/home/dhm/cybersec/programowanie/rust/sechat/client/crates/serverclient) target="serverclient"}: cargo::core::compiler::fingerprint: stale: changed "/home/dhm/cybersec/programowanie/rust/sechat/client/crates/serverclient/src/lib.rs"
+   0.211574785s  INFO prepare_target{force=false package_id=serverclient v0.1.0 (/home/dhm/cybersec/programowanie/rust/sechat/client/crates/serverclient) target="serverclient"}: cargo::core::compiler::fingerprint:           (vs) "/home/dhm/cybersec/programowanie/rust/sechat/client/target/debug/.fingerprint/serverclient-00c1652c0b5e65d1/dep-lib-serverclient"
+   0.211577741s  INFO prepare_target{force=false package_id=serverclient v0.1.0 (/home/dhm/cybersec/programowanie/rust/sechat/client/crates/serverclient) target="serverclient"}: cargo::core::compiler::fingerprint:                FileTime { seconds: 1781028846, nanos: 837514517 } < FileTime { seconds: 1781029657, nanos: 897797969 }
+   0.211624168s  INFO prepare_target{force=false package_id=serverclient v0.1.0 (/home/dhm/cybersec/programowanie/rust/sechat/client/crates/serverclient) target="serverclient"}: cargo::core::compiler::fingerprint: fingerprint dirty for serverclient v0.1.0 (/home/dhm/cybersec/programowanie/rust/sechat/client/crates/serverclient)/Check { test: false }/TargetInner { name_inferred: true, ..: lib_target("serverclient", ["lib"], "/home/dhm/cybersec/programowanie/rust/sechat/client/crates/serverclient/src/lib.rs", Edition2024) }
+   0.211631561s  INFO prepare_target{force=false package_id=serverclient v0.1.0 (/home/dhm/cybersec/programowanie/rust/sechat/client/crates/serverclient) target="serverclient"}: cargo::core::compiler::fingerprint:     dirty: FsStatusOutdated(StaleItem(ChangedFile { reference: "/home/dhm/cybersec/programowanie/rust/sechat/client/target/debug/.fingerprint/serverclient-00c1652c0b5e65d1/dep-lib-serverclient", reference_mtime: FileTime { seconds: 1781028846, nanos: 837514517 }, stale: "/home/dhm/cybersec/programowanie/rust/sechat/client/crates/serverclient/src/lib.rs", stale_mtime: FileTime { seconds: 1781029657, nanos: 897797969 } }))
+   0.212574532s  INFO prepare_target{force=false package_id=serverclient v0.1.0 (/home/dhm/cybersec/programowanie/rust/sechat/client/crates/serverclient) target="serverclient"}: cargo::core::compiler::fingerprint: stale: changed "/home/dhm/cybersec/programowanie/rust/sechat/client/crates/serverclient/src/lib.rs"
+   0.212579741s  INFO prepare_target{force=false package_id=serverclient v0.1.0 (/home/dhm/cybersec/programowanie/rust/sechat/client/crates/serverclient) target="serverclient"}: cargo::core::compiler::fingerprint:           (vs) "/home/dhm/cybersec/programowanie/rust/sechat/client/target/debug/.fingerprint/serverclient-98efda2becd068fb/dep-test-lib-serverclient"
+   0.212582557s  INFO prepare_target{force=false package_id=serverclient v0.1.0 (/home/dhm/cybersec/programowanie/rust/sechat/client/crates/serverclient) target="serverclient"}: cargo::core::compiler::fingerprint:                FileTime { seconds: 1781028846, nanos: 835583778 } < FileTime { seconds: 1781029657, nanos: 897797969 }
+   0.212606672s  INFO prepare_target{force=false package_id=serverclient v0.1.0 (/home/dhm/cybersec/programowanie/rust/sechat/client/crates/serverclient) target="serverclient"}: cargo::core::compiler::fingerprint: fingerprint dirty for serverclient v0.1.0 (/home/dhm/cybersec/programowanie/rust/sechat/client/crates/serverclient)/Check { test: true }/TargetInner { name_inferred: true, ..: lib_target("serverclient", ["lib"], "/home/dhm/cybersec/programowanie/rust/sechat/client/crates/serverclient/src/lib.rs", Edition2024) }
+   0.212613074s  INFO prepare_target{force=false package_id=serverclient v0.1.0 (/home/dhm/cybersec/programowanie/rust/sechat/client/crates/serverclient) target="serverclient"}: cargo::core::compiler::fingerprint:     dirty: FsStatusOutdated(StaleItem(ChangedFile { reference: "/home/dhm/cybersec/programowanie/rust/sechat/client/target/debug/.fingerprint/serverclient-98efda2becd068fb/dep-test-lib-serverclient", reference_mtime: FileTime { seconds: 1781028846, nanos: 835583778 }, stale: "/home/dhm/cybersec/programowanie/rust/sechat/client/crates/serverclient/src/lib.rs", stale_mtime: FileTime { seconds: 1781029657, nanos: 897797969 } }))
     Checking p2p v0.1.0 (/home/dhm/cybersec/programowanie/rust/sechat/client/crates/p2p)
     Checking serverclient v0.1.0 (/home/dhm/cybersec/programowanie/rust/sechat/client/crates/serverclient)
 error: could not compile `p2p` (lib) due to 4 previous errors; 4 warnings emitted
 warning: build failed, waiting for other jobs to finish...
 error: could not compile `p2p` (lib test) due to 4 previous errors; 4 warnings emitted
-error: could not compile `serverclient` (lib test) due to 6 previous errors; 12 warnings emitted
-error: could not compile `serverclient` (lib) due to 6 previous errors; 12 warnings emitted
+error: could not compile `serverclient` (lib test) due to 10 previous errors; 12 warnings emitted
+error: could not compile `serverclient` (lib) due to 10 previous errors; 12 warnings emitted

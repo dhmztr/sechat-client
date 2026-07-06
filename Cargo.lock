@@ -2622,7 +2622,10 @@ dependencies = [
  "chacha20poly1305",
  "chrono",
  "crypto",
+ "ed25519-dalek",
+ "rmp-serde",
  "serde",
+ "sha2 0.11.0",
  "tokio",
  "x25519-dalek",
 ]
@@ -3280,6 +3283,7 @@ dependencies = [
 name = "serverclient"
 version = "0.1.0"
 dependencies = [
+ "bytes",
  "chrono",
  "crypto",
  "ed25519-dalek",

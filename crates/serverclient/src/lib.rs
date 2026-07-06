@@ -1,226 +1,244 @@
-use std::sync::OnceLock;
-
+use bytes::Bytes;
 use crypto::*;
-
 use ed25519_dalek::*;
+use futures::stream::{SplitSink, SplitStream};
 use futures_util::{SinkExt, StreamExt};
-use serde::{Deserialize, Serialize};
-use serde_json;
+use handlers::*;
 use sha2::{Digest, Sha256};
+use std::sync::RwLock;
+use std::time::Duration;
 use tokio::{
-    io::{AsyncReadExt, stdin},
     net::TcpStream,
+    sync::mpsc::{self, Receiver, Sender},
+    time::interval,
 };
-use tokio_tungstenite::{MaybeTlsStream, WebSocketStream, connect_async};
+mod generators;
+use generators::*;
+use tokio_tungstenite::{MaybeTlsStream, WebSocketStream, connect_async, tungstenite::Message};
 use x25519_dalek::*;
+
+mod handlers;
 mod structs;
+
 use chrono::Utc;
 use structs::*;
-type WsStream = WebSocketStream<MaybeTlsStream<TcpStream>>;
+
+#[derive(PartialEq, Clone)]
+pub struct OnlinePeer {
+    pub keys: PeerPublic,
+    pub address: String,
+}
+
+pub type WsStream = WebSocketStream<MaybeTlsStream<TcpStream>>;
+
+static MY_ADDRESS: RwLock<Option<String>> = RwLock::new(None);
+static PEERS: RwLock<Vec<OnlinePeer>> = RwLock::new(vec![]);
+
+pub fn load_online_peers() -> Result<Vec<OnlinePeer>, ClientErrors> {
+    let peers = PEERS
+        .read()
+        .map_err(|e| ClientErrors::PeerLoadFailed(format!("lock poisoned: {}", e)))?;
+    Ok(peers.clone())
+}
+
+pub fn append_online_peer(hash: [u8; 32], ip_port: String) -> Result<(), ClientErrors> {
+    let mut peers = PEERS
+        .write()
+        .map_err(|e| ClientErrors::PeerSaveFailed(format!("lock poisoned: {}", e)))?;
+    let peer_data = load_peer_data(&hash).map_err(|_| ClientErrors::UnknownPeer)?;
+    let insertable = OnlinePeer {
+        keys: peer_data,
+        address: ip_port,
+    };
+    if !peers.contains(&insertable) {
+        peers.push(insertable);
+    }
+    Ok(())
+}
+
+pub fn remove_online_peer(hash: [u8; 32]) -> Result<(), ClientErrors> {
+    let mut peers = PEERS
+        .write()
+        .map_err(|e| ClientErrors::PeerSaveFailed(format!("lock poisoned: {}", e)))?;
+    peers.retain(|peer| generate_peer_hash(&peer.keys.public) != hash);
+    Ok(())
+}
+
+pub fn get_or_set_my_address(new_address: Option<String>) -> Option<String> {
+    let mut address = MY_ADDRESS.write().ok()?;
+    if let Some(addr) = new_address {
+        *address = Some(addr.clone());
+        Some(addr)
+    } else {
+        address.clone()
+    }
+}
+
 async fn connect_to_server(server_address: String) -> Result<WsStream, ClientErrors> {
     let url = format!("wss://{}/ws", server_address);
-    let (mut ws, _) = connect_async(url)
+    let (ws, _) = connect_async(url)
         .await
-        .map_err(|_| ClientErrors::ConnectionError)?;
+        .map_err(|e| ClientErrors::ConnectionFailed(e.to_string()))?;
     Ok(ws)
 }
 
-async fn server_inital_handshake(
-    public: &PublicKey,
-    singing: &SigningKey,
-    privkey: &StaticSecret,
-    peers: Vec<&PublicKey>,
+pub async fn run_client(
+    public: PublicKey,
+    signing: SigningKey,
+    privkey: StaticSecret,
     server_address: String,
 ) -> Result<(), ClientErrors> {
-    let connection = connect_to_server(server_address).await?;
-    let auth_message =
-        ClientToServer::new(generate_authenticate_message(public.to_bytes(), singing)?);
-    connection
-        .send(serde_json::to_string(&auth_message).unwrap().into())
-        .await
-        .map_err(|_| ClientErrors::ConnectionError)?;
-    let response = receive_message(&mut connection).await?;
-    match server_message.payload {
-        ServerMessage::AuthOk { observed_address } => loop {
-            let msg = receive_message(&mut connection).await?;
-            match msg.payload {
-                ServerMessage::PendingBlob {
-                    blob_id,
-                    blob,
-                    timestamp,
-                } => {
-                    let decrypted_blob =
-                        decrypt_blob(blob, &privkey).map_err(|_| ClientErrors::DwarfPacket)?;
-                    let deserialized_blob: BlobPayload = rmp_serde::from_slice(&decrypted_blob)
-                        .map_err(|_| ClientErrors::DwarfPacket)?;
-                    handle_blob(deserialized_blob, &privkey).await?;
-                    ack_blob(blob_id, &mut connection).await?;
-                }
-            }
-        },
-    }
-}
+    let mut connection = connect_to_server(server_address.clone()).await?;
 
-fn generate_authenticate_message(
-    public: [u8; 32],
-    singing: &SigningKey,
-) -> Result<ClientToServer, CryptoErrors> {
-    let (data, _) = sign_challenge(singing);
-    let payload = ClientMessage::Auth {
-        pub_key: public,
-        signature: data.to_vec(),
-    };
-    Ok(ClientToServer::new(payload))
-}
-fn generate_announce_message(
-    privkey: &StaticSecret,
-    peer_pub: &PublicKey,
-    timestamp: u64,
-    ip_port: String,
-) -> Result<ClientMessage, CryptoErrors> {
-    let token = presence_token(privkey, peer_pub, timestamp)?;
-    Ok(ClientMessage::Announce { token, ip_port })
-}
+    server_initial_handshake(&public, &signing, &privkey, &mut connection).await?;
 
-fn generate_unannounce_message(
-    privkey: &StaticSecret,
-    peer_pub: &PublicKey,
-    timestamp: u64,
-) -> Result<ClientMessage, CryptoErrors> {
-    let token = presence_token(privkey, peer_pub, timestamp)?;
-    Ok(ClientMessage::Unannounce { token })
-}
+    let (write, read) = connection.split();
 
-fn generate_blob(peer_pub: &PublicKey, message: Vec<u8>) -> Result<ClientMessage, CryptoErrors> {
-    let hash: [u8; 32] = generate_peer_hash(peer_pub);
-    Ok(ClientMessage::SendBlob {
-        recipient_hash: hash,
-        blob: message,
-    })
-}
-fn generate_peer_hash(peer_pub: &PublicKey) -> [u8; 32] {
-    Sha256::digest(peer_pub.as_bytes()).into()
-}
+    let (out_tx, out_rx) = mpsc::channel::<ClientToServer>(100);
+    let (in_tx, in_rx) = mpsc::channel::<ServerToClient>(100);
 
-pub fn generate_peer_lookup(peer_pub: &PublicKey) -> ClientMessage {
-    ClientMessage::LookupPeer {
-        token: generate_peer_hash(peer_pub),
-    }
-}
-pub fn generate_ack_blob(blob_id: String) -> ClientMessage {
-    ClientMessage::AckBlob { blob_id }
-}
-pub fn parse_server_message(msg: &str) -> Result<ServerToClient, ClientErrors> {
-    serde_json::from_str(msg).map_err(|_| ClientErrors::DwarfPacket)
-}
-pub async fn receive_message(
-    &mut connection: &mut WsStream,
-) -> Result<ServerToClient, ClientErrors> {
-    let response = connection
-        .next()
-        .await
-        .ok_or(ClientErrors::ConnectionError)?
-        .map_err(|_| ClientErrors::ConnectionError)?;
-    parse_server_message(&response.to_string())
-}
-pub async fn ack_blob(blob_id: String, connection: &mut WsStream) -> Result<(), ClientErrors> {
-    let ack_message = generate_ack_blob(blob_id);
-    connection
-        .send(
-            serde_json::to_string(&ClientToServer::new(ack_message))
-                .unwrap()
-                .into(),
-        )
-        .await
-        .map_err(|_| ClientErrors::ConnectionError)
-}
-pub async fn handle_blob(blob: BlobPayload, privkey: &StaticSecret) -> Result<(), ClientErrors> {
-    match blob {
-        BlobPayload::OfflineMessage {
-            sender_x25519_pub,
-            timestamp,
-            ciphertext,
-            signature,
-        } => {
-            let public_peer = PublicKey::from(sender_x25519_pub);
-            let peer_data = load_peer_data(&public_peer).map_err(|_| ClientErrors::DwarfPacket)?;
-            if !load_peers()
-                .map_err(|_| ClientErrors::DwarfPacket)?
-                .contains(&peer_data)
-            {
-                return Err(ClientErrors::BadPacket);
-            };
-            let sig = Signature::from_slice(signature.as_slice())
-                .map_err(|_| ClientErrors::DwarfPacket)?;
-            let verif = peer_data.verifying;
-            let bits_to_verify = [ciphertext.as_slice(), &timestamp.to_le_bytes()].concat();
-            if !verify_challenge(verif, &ciphertext, &sig).is_ok() {
-                return Err(ClientErrors::BadPacket);
-            }
-            let stored_chat =
-                load_peer_chat_file(&public_peer).map_err(|_| ClientErrors::DwarfPacket)?;
-            insert_blob_to_chat(ciphertext, &stored_chat);
-        }
-        BlobPayload::FriendRequest {
-            sender_ed25519_verifying,
-            sender_x25519_pub,
-            bits,
-            signature,
-        } => {
-            let public_peer = PublicKey::from(sender_x25519_pub);
-            let verif = VerifyingKey::from_bytes(&sender_ed25519_verifying).unwrap();
-            let pb = PeerPublic {
-                public: public_peer,
-                verifying: verif,
-            };
-            let sig: [u8; 64] = signature
-                .try_into()
-                .map_err(|_| ClientErrors::DwarfPacket)?;
-            let signature = Signature::from_bytes(&sig);
-            if load_peers().unwrap().contains(&pb)
-                || !verify_challenge(verif, bits.as_slice(), &signature).is_ok()
-            {
-                return Err(ClientErrors::BadPacket);
-            } else {
-                handle_friend_request(&public_peer, &verif, &privkey);
-            }
-        }
-        BlobPayload::Purge {
-            sender_x25519_pub,
-            new_x25519_pub,
-            new_ed25519_verifying,
-        } => {
-            let public_peer = PublicKey::from(sender_x25519_pub);
-            if load_peer_data(&public_peer).is_ok() {
-                purge_peer_chat(&public_peer).map_err(|_| ClientErrors::DwarfPacket)?;
-            }
-        }
-        BlobPayload::FriendAccept { sender_x25519_pub } => {
-            let public_peer = PublicKey::from(sender_x25519_pub);
-            if move_from_pending_to_peers(&public_peer).is_ok() {
-            } else {
-                return Err(ClientErrors::DwarfPacket);
-            }
-        }
-        BlobPayload::FriendDenied { sender_x25519_pub } => {
-            let public_peer = PublicKey::from(sender_x25519_pub);
-            if denied_friend_request(&public_peer).is_ok() {
-            } else {
-                return Err(ClientErrors::DwarfPacket);
-            }
-        }
+    let write_handle = tokio::spawn(write_loop(out_rx, write));
+    let read_handle = tokio::spawn(read_loop(read, in_tx));
+
+    let privkey_for_presence = privkey.clone();
+    let out_tx_for_presence = out_tx.clone();
+    let presence_handle = tokio::spawn(presence_refresh_loop(
+        out_tx_for_presence,
+        privkey_for_presence,
+    ));
+
+    let privkey_for_dispatch = privkey.clone();
+    let dispatch_handle = tokio::spawn(main_dispatch_loop(in_rx, out_tx, privkey_for_dispatch));
+
+    tokio::select! {
+        _ = write_handle => eprintln!("write_loop ended"),
+        _ = read_handle => eprintln!("read_loop ended"),
+        _ = presence_handle => eprintln!("presence_refresh ended"),
+        _ = dispatch_handle => eprintln!("dispatch ended"),
     }
 
     Ok(())
 }
 
-pub fn handle_friend_request(&pubkey: &PublicKey, verif: &VerifyingKey, privkey: &StaticSecret) {
-    println!("You have received a friend request. Do you want to accept it? (y/n)");
-    let mut input = String::new();
-    std::io::stdin().read_line(&mut input).unwrap();
-    if input.trim().to_lowercase() == "y" {
-        println!("Friend request accepted.");
-    } else {
-        println!("Friend request rejected.");
+pub async fn main_dispatch_loop(
+    mut in_rx: Receiver<ServerToClient>,
+    out_tx: Sender<ClientToServer>,
+    privkey: StaticSecret,
+) {
+    while let Some(msg) = in_rx.recv().await {
+        match handle_message(msg, &privkey).await {
+            Ok(Some(response)) => {
+                if out_tx.send(response).await.is_err() {
+                    eprintln!("{}", ClientErrors::ChannelClosed);
+                    break;
+                }
+            }
+            Ok(None) => {}
+            Err(e) => eprintln!("handle_message error: {}", e),
+        }
     }
+}
+
+pub async fn presence_refresh_loop(out_tx: Sender<ClientToServer>, privkey: StaticSecret) {
+    let mut ticker = interval(Duration::from_secs(15));
+    ticker.tick().await;
+
+    loop {
+        ticker.tick().await;
+
+        let address = match get_or_set_my_address(None) {
+            Some(a) => a,
+            None => continue,
+        };
+
+        let peers = match load_peers() {
+            Ok(p) => p,
+            Err(e) => {
+                eprintln!("presence: load_peers failed: {:?}", e);
+                continue;
+            }
+        };
+
+        let timestamp = Utc::now().timestamp();
+
+        for peer in peers.iter() {
+            let msg =
+                match generate_announce_message(&privkey, &peer.public, timestamp, address.clone())
+                {
+                    Ok(m) => m,
+                    Err(e) => {
+                        eprintln!("presence: generate_announce failed: {:?}", e);
+                        continue;
+                    }
+                };
+            if out_tx.send(ClientToServer::new(msg, None)).await.is_err() {
+                eprintln!("presence: {}", ClientErrors::ChannelClosed);
+                return;
+            }
+        }
+    }
+}
+
+pub async fn write_loop(
+    mut reader: Receiver<ClientToServer>,
+    mut writer: SplitSink<WsStream, Message>,
+) {
+    while let Some(msg) = reader.recv().await {
+        let bytes = match rmp_serde::to_vec(&msg) {
+            Ok(b) => b,
+            Err(e) => {
+                eprintln!("{}", ClientErrors::SerializationFailed(e.to_string()));
+                continue;
+            }
+        };
+        if let Err(e) = writer.send(Message::Binary(Bytes::from(bytes))).await {
+            eprintln!("{}", ClientErrors::WriteFailed(e.to_string()));
+            break;
+        }
+    }
+}
+
+pub async fn read_loop(mut reader: SplitStream<WsStream>, writer: Sender<ServerToClient>) {
+    while let Some(message) = reader.next().await {
+        match message {
+            Ok(Message::Binary(data)) => match parse_server_message(&data) {
+                Ok(parsed_msg) => {
+                    if writer.send(parsed_msg).await.is_err() {
+                        eprintln!("{}", ClientErrors::ChannelClosed);
+                        break;
+                    }
+                }
+                Err(e) => eprintln!("read_loop: {}", e),
+            },
+            Ok(Message::Close(_)) => {
+                eprintln!("{}", ClientErrors::ConnectionClosed);
+                break;
+            }
+            Ok(_) => {}
+            Err(e) => {
+                eprintln!("{}", ClientErrors::ReadFailed(e.to_string()));
+                break;
+            }
+        }
+    }
+}
+
+pub async fn receive_message(connection: &mut WsStream) -> Result<ServerToClient, ClientErrors> {
+    loop {
+        let response = connection
+            .next()
+            .await
+            .ok_or(ClientErrors::ConnectionClosed)?
+            .map_err(|e| ClientErrors::ReadFailed(e.to_string()))?;
+
+        match response {
+            Message::Binary(data) => return parse_server_message(&data),
+            Message::Close(_) => return Err(ClientErrors::ConnectionClosed),
+            _ => continue,
+        }
+    }
+}
+
+pub fn parse_server_message(msg: &[u8]) -> Result<ServerToClient, ClientErrors> {
+    rmp_serde::from_slice(msg).map_err(|e| ClientErrors::DeserializationFailed(e.to_string()))
 }

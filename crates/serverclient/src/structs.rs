@@ -1,13 +1,81 @@
 use chrono::Utc;
 use crypto::Message;
 use serde::{Deserialize, Serialize};
+use std::fmt;
 
 #[derive(Debug)]
 pub enum ClientErrors {
-    ConnectionError,
-    BadPacket,
-    DwarfPacket,
+    // Połączenie
+    ConnectionFailed(String),
+    ConnectionClosed,
+    ConnectionTimeout,
+    WriteFailed(String),
+    ReadFailed(String),
+
+    // Serializacja / parsing
+    SerializationFailed(String),
+    DeserializationFailed(String),
+    InvalidMessageFormat,
+
+    // Autentykacja
+    AuthFailed(String),
+    AuthTimeout,
+    UnexpectedHandshakeMessage,
+
+    // Walidacja zawartości
+    InvalidSignature,
+    InvalidTimestamp,
+    ReplayDetected,
+    UnknownPeer,
+    InvalidPublicKey,
+
+    // Operacje kryptograficzne
+    DecryptionFailed,
+    EncryptionFailed,
+    KeyDerivationFailed,
+
+    // Storage
+    PeerLoadFailed(String),
+    PeerSaveFailed(String),
+    ChatStorageFailed(String),
+
+    // Wewnętrzne
+    ChannelClosed,
+    ServerError(String),
 }
+
+impl fmt::Display for ClientErrors {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ClientErrors::ConnectionFailed(s) => write!(f, "connection failed: {}", s),
+            ClientErrors::ConnectionClosed => write!(f, "connection closed"),
+            ClientErrors::ConnectionTimeout => write!(f, "connection timeout"),
+            ClientErrors::WriteFailed(s) => write!(f, "write failed: {}", s),
+            ClientErrors::ReadFailed(s) => write!(f, "read failed: {}", s),
+            ClientErrors::SerializationFailed(s) => write!(f, "serialization failed: {}", s),
+            ClientErrors::DeserializationFailed(s) => write!(f, "deserialization failed: {}", s),
+            ClientErrors::InvalidMessageFormat => write!(f, "invalid message format"),
+            ClientErrors::AuthFailed(s) => write!(f, "auth failed: {}", s),
+            ClientErrors::AuthTimeout => write!(f, "auth timeout"),
+            ClientErrors::UnexpectedHandshakeMessage => write!(f, "unexpected handshake message"),
+            ClientErrors::InvalidSignature => write!(f, "invalid signature"),
+            ClientErrors::InvalidTimestamp => write!(f, "invalid timestamp"),
+            ClientErrors::ReplayDetected => write!(f, "replay attack detected"),
+            ClientErrors::UnknownPeer => write!(f, "unknown peer"),
+            ClientErrors::InvalidPublicKey => write!(f, "invalid public key"),
+            ClientErrors::DecryptionFailed => write!(f, "decryption failed"),
+            ClientErrors::EncryptionFailed => write!(f, "encryption failed"),
+            ClientErrors::KeyDerivationFailed => write!(f, "key derivation failed"),
+            ClientErrors::PeerLoadFailed(s) => write!(f, "peer load failed: {}", s),
+            ClientErrors::PeerSaveFailed(s) => write!(f, "peer save failed: {}", s),
+            ClientErrors::ChatStorageFailed(s) => write!(f, "chat storage failed: {}", s),
+            ClientErrors::ChannelClosed => write!(f, "internal channel closed"),
+            ClientErrors::ServerError(s) => write!(f, "server reported error: {}", s),
+        }
+    }
+}
+
+impl std::error::Error for ClientErrors {}
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct ClientToServer {
@@ -22,9 +90,11 @@ pub struct ServerToClient {
 }
 
 impl ClientToServer {
-    pub fn new(payload: ClientMessage) -> Self {
-        let timestamp = Utc::now().timestamp();
-        ClientToServer { payload, timestamp }
+    pub fn new(payload: ClientMessage, timestamp: Option<i64>) -> Self {
+        ClientToServer {
+            payload,
+            timestamp: timestamp.unwrap_or(Utc::now().timestamp()),
+        }
     }
 }
 
@@ -52,15 +122,27 @@ pub enum ClientMessage {
         recipient_hash: [u8; 32],
         blob: Vec<u8>,
     },
+    Purge {
+        hash_pubkey: [u8; 32],
+    },
     AckBlob {
         blob_id: String,
     },
     LookupPeer {
         token: [u8; 32],
     },
+    RequestHolePunch {
+        token: [u8; 32],
+    },
+    RequestDenied {
+        token: [u8; 32],
+    },
+    RequestAccepted {
+        token: [u8; 32],
+    },
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub enum ServerMessage {
     AuthOk {
         observed_address: String,
@@ -71,52 +153,51 @@ pub enum ServerMessage {
     PendingBlob {
         blob_id: String,
         blob: Vec<u8>,
-        timestamp: u64,
+        timestamp: i64,
     },
     PeerOnline {
-        token: [u8; 32],
+        hash: [u8; 32],
         ip_port: String,
     },
     PeerOffline {
-        token: [u8; 32],
+        hash: [u8; 32],
     },
-    PeerFound {
+    PunchHole {
         token: [u8; 32],
         ip_port: String,
-    },
-    PeerNotFound {
-        token: [u8; 32],
+        punchtimestamp: i64,
     },
     Error {
         reason: String,
     },
     PendingBlobsEnd,
+    RequestHolePunch {
+        pub_key: [u8; 32],
+        token: [u8; 32],
+    },
+    RequestDenied {
+        token: [u8; 32],
+        pub_key: [u8; 32],
+        reason: RequestDeniedReason,
+    },
 }
-
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+pub enum RequestDeniedReason {
+    PeerDeclined,
+    Timeout,
+}
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub enum BlobPayload {
-    FriendRequest {
-        sender_x25519_pub: [u8; 32],
-        sender_ed25519_verifying: [u8; 32],
-        bits: Vec<u8>,
-        signature: Vec<u8>,
-    },
-    FriendAccept {
-        sender_x25519_pub: [u8; 32],
-    },
-    FriendDenied {
-        sender_x25519_pub: [u8; 32],
-    },
     OfflineMessage {
-        sender_x25519_pub: [u8; 32],
-        timestamp: u64,
+        sender_pub_hash: [u8; 32],
+        timestamp: i64,
         ciphertext: Vec<u8>,
         signature: Vec<u8>,
     },
     Purge {
-        sender_x25519_pub: [u8; 32],
-        new_x25519_pub: [u8; 32],
-        new_ed25519_verifying: [u8; 32],
+        sender_pub_hash: [u8; 32],
+        signature: Vec<u8>,
+        timestamp: i64,
     },
 }
 
@@ -133,11 +214,11 @@ pub enum P2PMessage {
         signature: Vec<u8>,
     },
     ChatMessage {
-        counter: u64,
+        counter: i64,
         ciphertext: Vec<u8>,
     },
     SyncRequest {
-        last_timestamp: u64,
+        last_timestamp: i64,
     },
     SyncResponse {
         messages: Vec<Message>,

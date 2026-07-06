@@ -32,7 +32,7 @@ pub struct Messages {
     data: Vec<Message>,
     peer: String,
 }
-#[derive(PartialEq)]
+#[derive(PartialEq, Clone)]
 pub struct PeerPublic {
     pub public: PublicKey,
     pub verifying: VerifyingKey,
@@ -284,11 +284,11 @@ pub fn initialize_peer(
     Ok((Key::from(session_key), Key::from(storage_key)))
 }
 
-pub fn load_peer_data(pubkey: &PublicKey) -> Result<PeerPublic, CryptoErrors> {
-    let hex = hex::encode(Sha256::digest(pubkey.as_bytes()));
-    let peer_dir = peers_dir().join(&hex);
+pub fn load_peer_data(data: &[u8; 32]) -> Result<PeerPublic, CryptoErrors> {
+    let hash = String::from_utf8_lossy(data).to_string();
+    let peer_dir = peers_dir().join(&hash);
     if !peer_dir.is_dir() {
-        return Err(CryptoErrors::NotFound(hex));
+        return Err(CryptoErrors::NotFound(hash.to_owned()));
     }
     let buf = read_file_to_buffer(peer_dir.join("peer.pub"), 32)?;
     let pub_bytes: KeyType = buf[..32]
@@ -361,7 +361,7 @@ pub fn purge(path: Option<PathBuf>, mut privkey: StaticSecret) -> Result<(), Cry
 pub fn presence_token(
     privkey: &StaticSecret,
     peer_pub: &PublicKey,
-    timestamp: u64,
+    timestamp: i64,
 ) -> Result<KeyType, CryptoErrors> {
     let shared = privkey.diffie_hellman(&peer_pub);
     let hk = Hkdf::<Sha256>::new(None, shared.as_bytes());
@@ -389,11 +389,9 @@ pub fn verify_challenge(
         .verify(bits, signature)
         .map_err(|_| CryptoErrors::CryptographicError)
 }
-pub fn sign_challenge(signing: &SigningKey) -> (Signature, KeyType) {
-    let mut bytes: KeyType = [0u8; 32];
-    OsRng.fill_bytes(&mut bytes);
+pub fn sign_challenge(signing: &SigningKey, bytes: &[u8]) -> Signature {
     let signature = signing.sign(&bytes);
-    (signature, bytes)
+    signature
 }
 pub fn load_peers() -> Result<Vec<PeerPublic>, CryptoErrors> {
     let peersdir = peers_dir();
@@ -434,13 +432,13 @@ pub fn load_peers() -> Result<Vec<PeerPublic>, CryptoErrors> {
 pub fn derive_session_key(
     ephermal_priv: &StaticSecret,
     peer_ephemeral_pub: &PublicKey,
-) -> Result<Key, CryptoErrors> {
+) -> Result<[u8; 32], CryptoErrors> {
     let shared = ephermal_priv.diffie_hellman(peer_ephemeral_pub);
     let hk = Hkdf::<Sha256>::new(None, shared.as_bytes());
     let mut session_key: KeyType = [0u8; 32];
     hk.expand(b"session", &mut session_key)
-        .map_err(|_| CryptoErrors::CryptographicError);
-    Ok(Key::from(session_key))
+        .map_err(|_| CryptoErrors::CryptographicError)?;
+    Ok(session_key)
 }
 pub fn load_peer_chat_messages(key: &PublicKey, storagekey: Key) -> Result<Messages, CryptoErrors> {
     let hex_path = hex::encode(Sha256::digest(key.as_bytes()));
@@ -494,9 +492,9 @@ pub fn insert_message_stored(msg: Message, storagekey: Key, db: Db) -> Result<()
         .map_err(|_| CryptoErrors::CorruptedFile)?;
     Ok(())
 }
-pub fn load_peer_chat_file(peer_pub: &PublicKey) -> Result<Db, CryptoErrors> {
-    let hex_path = hex::encode(Sha256::digest(peer_pub.as_bytes()));
-    let path = peers_dir().as_path().join(&hex_path).join("chat.db");
+pub fn load_peer_chat_file(data: &[u8; 32]) -> Result<Db, CryptoErrors> {
+    let hash = String::from_utf8_lossy(data).to_string();
+    let path = peers_dir().as_path().join(&hash).join("chat.db");
     sled::open(path).map_err(|_| CryptoErrors::CorruptedFile)
 }
 pub fn insert_blob_to_chat(blob: Vec<u8>, db: &Db) -> Result<(), CryptoErrors> {
@@ -552,81 +550,10 @@ pub fn decrypt_blob(blob: Vec<u8>, privkey: &StaticSecret) -> Result<Vec<u8>, Cr
     Ok(decrypted)
 }
 
-pub fn insert_waiting_friend_request(peer_pub: &PublicKey) -> Result<(), CryptoErrors> {
-    let path = sechat_dir().join("friend_requests.db");
-    let db = sled::open(path).map_err(|_| CryptoErrors::CorruptedFile)?;
-    let hex = hex::encode(Sha256::digest(peer_pub.as_bytes()));
-    let count = find_counter(&db)?;
-    db.insert(count.to_be_bytes(), hex.as_bytes())
-        .map_err(|_| CryptoErrors::CorruptedFile)?;
-    Ok(())
-}
-pub fn check_if_friend_waiting(peer_pub: &PublicKey) -> Result<bool, CryptoErrors> {
-    let path = sechat_dir().join("friend_requests.db");
-    let db = sled::open(path).map_err(|_| CryptoErrors::CorruptedFile)?;
-    if db
-        .iter()
-        .filter(|item| {
-            if let Ok((_, value)) = item {
-                value.as_ref() == hex::encode(Sha256::digest(peer_pub.as_bytes())).as_bytes()
-            } else {
-                false
-            }
-        })
-        .count()
-        > 0
-    {
-        Ok(true)
-    } else {
-        Ok(false)
-    }
-}
-
-pub fn purge_peer_chat(peer_pub: &PublicKey) -> Result<(), CryptoErrors> {
-    let hex_path = hex::encode(Sha256::digest(peer_pub.as_bytes()));
-    let path = peers_dir().as_path().join(&hex_path);
+pub fn purge_peer_chat(data: &[u8; 32]) -> Result<(), CryptoErrors> {
+    let hash = String::from_utf8_lossy(data).to_string();
+    let path = peers_dir().as_path().join(hash);
     remove_dir_all(path).map_err(CryptoErrors::Other)
-}
-pub fn create_pending_chat(peer_pub: &PublicKey, verif: &VerifyingKey) -> Result<(), CryptoErrors> {
-    let hex_path = hex::encode(Sha256::digest(peer_pub.as_bytes()));
-    let path = pending_dir().as_path().join(&hex_path);
-    let bytes_to_write: Vec<u8> = [peer_pub.to_bytes(), verif.to_bytes()].concat();
-    fs::write(path, bytes_to_write).map_err(CryptoErrors::Other)?;
-    Ok(())
-}
-
-pub fn move_from_pending_to_peers(peer_pub: &PublicKey) -> Result<(), CryptoErrors> {
-    let hex_path = hex::encode(Sha256::digest(peer_pub.as_bytes()));
-    let pending_path = pending_dir().as_path().join(&hex_path);
-    if !pending_path.exists() {
-        return Err(CryptoErrors::NotFound(hex_path));
-    }
-    let mut buf = [0u8; 64];
-    let mut file = OpenOptions::new()
-        .read(true)
-        .open(&pending_path)
-        .map_err(CryptoErrors::Other)?;
-    file.read_exact(&mut buf).map_err(CryptoErrors::Other)?;
-    let peer_path = peers_dir().as_path().join(&hex_path);
-    fs::create_dir_all(&peer_path).map_err(CryptoErrors::Other)?;
-    let mut peer_pub_f = OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .open(peer_path.join("peer.pub"))
-        .map_err(CryptoErrors::Other)?;
-    peer_pub_f.write_all(&buf).map_err(CryptoErrors::Other)?;
-    peer_pub_f.flush().map_err(CryptoErrors::Other)?;
-    fs::remove_file(pending_path).map_err(CryptoErrors::Other)?;
-    Ok(())
-}
-pub fn denied_friend_request(peer_pub: &PublicKey) -> Result<(), CryptoErrors> {
-    let hex_path = hex::encode(Sha256::digest(peer_pub.as_bytes()));
-    let pending_path = pending_dir().as_path().join(&hex_path);
-    if pending_path.exists() {
-        fs::remove_file(pending_path).map_err(CryptoErrors::Other)?;
-    }
-    Ok(())
 }
 #[cfg(test)]
 mod tests {
@@ -635,8 +562,9 @@ mod tests {
     fn test_encryption_chat() {
         let (private, public) = generate_x25519();
         let sessionkey = derive_session_key(&private, &public).unwrap();
-        let encrypted_data = encrypt_message_for_chat("Hi".to_owned(), sessionkey, 0);
-        let decrypted_data = decrypt_message_from_chat(encrypted_data, sessionkey, 0).unwrap();
+        let encrypted_data = encrypt_message_for_chat("Hi".to_owned(), Key::from(sessionkey), 0);
+        let decrypted_data =
+            decrypt_message_from_chat(encrypted_data, Key::from(sessionkey), 0).unwrap();
         assert_eq!(decrypted_data, "Hi".to_owned())
     }
     #[test]
