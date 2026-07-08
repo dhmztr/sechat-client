@@ -5,41 +5,34 @@ use std::fmt;
 
 #[derive(Debug)]
 pub enum ClientErrors {
-    // Połączenie
     ConnectionFailed(String),
     ConnectionClosed,
     ConnectionTimeout,
     WriteFailed(String),
     ReadFailed(String),
 
-    // Serializacja / parsing
     SerializationFailed(String),
     DeserializationFailed(String),
     InvalidMessageFormat,
 
-    // Autentykacja
     AuthFailed(String),
     AuthTimeout,
     UnexpectedHandshakeMessage,
 
-    // Walidacja zawartości
     InvalidSignature,
     InvalidTimestamp,
     ReplayDetected,
     UnknownPeer,
     InvalidPublicKey,
 
-    // Operacje kryptograficzne
     DecryptionFailed,
     EncryptionFailed,
     KeyDerivationFailed,
 
-    // Storage
     PeerLoadFailed(String),
     PeerSaveFailed(String),
     ChatStorageFailed(String),
 
-    // Wewnętrzne
     ChannelClosed,
     ServerError(String),
 }
@@ -109,6 +102,7 @@ impl ServerToClient {
 pub enum ClientMessage {
     Auth {
         pub_key: [u8; 32],
+        verif: [u8; 32],
         signature: Vec<u8>,
     },
     Announce {
@@ -139,6 +133,10 @@ pub enum ClientMessage {
     },
     RequestAccepted {
         token: [u8; 32],
+    },
+    RelayData {
+        recipient_hash: [u8; 32],
+        payload: Vec<u8>,
     },
 }
 
@@ -180,11 +178,46 @@ pub enum ServerMessage {
         pub_key: [u8; 32],
         reason: RequestDeniedReason,
     },
+    RelayData {
+        sender_hash: [u8; 32],
+        payload: Vec<u8>,
+    },
 }
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub enum RequestDeniedReason {
     PeerDeclined,
     Timeout,
+}
+
+#[derive(Debug, Clone)]
+pub enum ServerEvent {
+    Authenticated {
+        observed_address: String,
+    },
+    PeerOnline {
+        hash: [u8; 32],
+        ip_port: String,
+    },
+    PeerOffline {
+        hash: [u8; 32],
+    },
+    PunchHole {
+        token: [u8; 32],
+        ip_port: String,
+        punchtimestamp: i64,
+    },
+    HolePunchDenied {
+        peer: [u8; 32],
+        reason: String,
+    },
+    BlobStored {
+        sender_hash: [u8; 32],
+    },
+    RelayData {
+        sender_hash: [u8; 32],
+        payload: Vec<u8>,
+    },
+    Disconnected,
 }
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub enum BlobPayload {

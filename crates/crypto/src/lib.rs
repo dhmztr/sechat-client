@@ -1,6 +1,6 @@
-use argon2::{Argon2, password_hash};
+use argon2::Argon2;
 use chacha20poly1305::{
-    ChaCha20Poly1305, ChaChaPoly1305, Key, KeyInit, Nonce,
+    ChaCha20Poly1305, Key, KeyInit, Nonce,
     aead::{Aead, AeadCore},
 };
 use chrono::Utc;
@@ -15,7 +15,7 @@ use sled::{Db, IVec};
 use std::sync::OnceLock;
 use std::{fmt, fs::remove_dir_all};
 use std::{
-    fs::{self, OpenOptions, metadata},
+    fs::{self, OpenOptions},
     io::{Read, Write},
     os::unix::fs::OpenOptionsExt,
     path::PathBuf,
@@ -24,13 +24,13 @@ static SECHAT_DIR: OnceLock<PathBuf> = OnceLock::new();
 static PEERS_DIR: OnceLock<PathBuf> = OnceLock::new();
 static PENDING_DIR: OnceLock<PathBuf> = OnceLock::new();
 #[derive(Serialize, Deserialize, Clone, PartialEq, Debug)]
-enum Author {
+pub enum Author {
     You,
     Peer,
 }
 pub struct Messages {
-    data: Vec<Message>,
-    peer: String,
+    pub data: Vec<Message>,
+    pub peer: String,
 }
 #[derive(PartialEq, Clone)]
 pub struct PeerPublic {
@@ -39,13 +39,20 @@ pub struct PeerPublic {
 }
 #[derive(Serialize, Clone, Deserialize, PartialEq, Debug)]
 pub struct Message {
-    author: Author,
-    text: String,
-    timestamp: i64,
+    pub author: Author,
+    pub text: String,
+    pub timestamp: i64,
 }
 impl Message {
-    fn new(text: String, author: Author) -> Self {
+    pub fn new(text: String, author: Author) -> Self {
         let timestamp: i64 = Utc::now().timestamp();
+        Message {
+            text,
+            author,
+            timestamp,
+        }
+    }
+    pub fn from_parts(text: String, author: Author, timestamp: i64) -> Self {
         Message {
             text,
             author,
@@ -131,7 +138,6 @@ pub fn encrypt_keyfile(
     let mut salt = [0u8; 32];
     OsRng.fill_bytes(&mut salt);
 
-    // połącz oba priv_key w jeden plaintext 64B
     let mut plaintext = [0u8; 64];
     plaintext[..32].copy_from_slice(&x25519_priv.to_bytes());
     plaintext[32..].copy_from_slice(ed25519_signing.as_bytes());
@@ -147,7 +153,6 @@ pub fn encrypt_keyfile(
         .encrypt(&nonce, plaintext.as_slice())
         .map_err(|e| format!("Encrypt error: {}", e))?;
 
-    // zeroize plaintext po szyfrowaniu
     plaintext.zeroize();
     derived_filekey.zeroize();
 
@@ -160,13 +165,11 @@ pub fn encrypt_keyfile(
     #[cfg(unix)]
     options.mode(0o600);
 
-    // [sól 32B][nonce 12B][ciphertext 80B] = 124B
     let writeable = [salt.as_slice(), nonce.as_slice(), ciphertext.as_slice()].concat();
     let mut file = options.open(base_dir.join("identity.key"))?;
     file.write_all(&writeable)?;
     file.flush()?;
 
-    // [x25519_pub 32B][ed25519_verifying 32B] = 64B
     let mut pub_bytes = [0u8; 64];
     pub_bytes[..32].copy_from_slice(x25519_pub.as_bytes());
     pub_bytes[32..].copy_from_slice(ed25519_signing.verifying_key().as_bytes());
@@ -178,13 +181,11 @@ pub fn encrypt_keyfile(
 }
 
 pub fn read_keyfile() -> Result<FileData, CryptoErrors> {
-    // 32(sól) + 12(nonce) + 80(ciphertext) = 124B
     let privkeybuf = read_file_to_buffer(sechat_dir().join("identity.key"), 124)?;
     let salt = privkeybuf[..32].to_vec();
     let nonce = privkeybuf[32..44].to_vec();
     let ciphertext = privkeybuf[44..124].to_vec();
 
-    // 32(x25519_pub) + 32(ed25519_verifying) = 64B
     let pubkeybuf = read_file_to_buffer(sechat_dir().join("identity.pub"), 64)?;
     let pubkey = pubkeybuf[..].to_vec();
 
@@ -210,14 +211,12 @@ pub fn decrypt_keyfile(password: String, file_data: FileData) -> Result<Keys, Cr
 
     derived_filekey.zeroize();
 
-    // x25519
     let x25519_bytes: KeyType = plaintext[..32]
         .try_into()
         .map_err(|_| CryptoErrors::CorruptedFile)?;
     let x25519_priv = StaticSecret::from(x25519_bytes);
     let x25519_pub = PublicKey::from(&x25519_priv);
 
-    // ed25519
     let ed25519_bytes: KeyType = plaintext[32..64]
         .try_into()
         .map_err(|_| CryptoErrors::CorruptedFile)?;
@@ -250,12 +249,20 @@ pub fn read_file_to_buffer(filename: PathBuf, sizeinbytes: usize) -> Result<Vec<
     Ok(buf)
 }
 
+pub fn identity_hash(x25519_pub: &PublicKey, verifying: &VerifyingKey) -> [u8; 32] {
+    Sha256::new()
+        .chain_update(x25519_pub.as_bytes())
+        .chain_update(verifying.as_bytes())
+        .finalize()
+        .into()
+}
+
 pub fn initialize_peer(
     peer_pub: &PublicKey,
     peer_veryfing: &VerifyingKey,
     privkey: &StaticSecret,
 ) -> Result<(Key, Key), CryptoErrors> {
-    let sechat_path = peers_dir().join(hex::encode(Sha256::digest(peer_pub.as_bytes())));
+    let sechat_path = peers_dir().join(hex::encode(identity_hash(peer_pub, peer_veryfing)));
 
     fs::create_dir_all(&sechat_path).map_err(|e| CryptoErrors::Other(e))?;
     let mut peer_pub_f = OpenOptions::new()
@@ -285,12 +292,12 @@ pub fn initialize_peer(
 }
 
 pub fn load_peer_data(data: &[u8; 32]) -> Result<PeerPublic, CryptoErrors> {
-    let hash = String::from_utf8_lossy(data).to_string();
+    let hash = hex::encode(data).to_string();
     let peer_dir = peers_dir().join(&hash);
     if !peer_dir.is_dir() {
         return Err(CryptoErrors::NotFound(hash.to_owned()));
     }
-    let buf = read_file_to_buffer(peer_dir.join("peer.pub"), 32)?;
+    let buf = read_file_to_buffer(peer_dir.join("peer.pub"), 64)?;
     let pub_bytes: KeyType = buf[..32]
         .try_into()
         .map_err(|_| CryptoErrors::CorruptedFile)?;
@@ -440,8 +447,28 @@ pub fn derive_session_key(
         .map_err(|_| CryptoErrors::CryptographicError)?;
     Ok(session_key)
 }
-pub fn load_peer_chat_messages(key: &PublicKey, storagekey: Key) -> Result<Messages, CryptoErrors> {
-    let hex_path = hex::encode(Sha256::digest(key.as_bytes()));
+
+pub fn relay_session_key(peer_pub: &PublicKey, my_priv: &StaticSecret) -> [u8; 32] {
+    let shared = my_priv.diffie_hellman(peer_pub);
+    let hk = Hkdf::<Sha256>::new(None, shared.as_bytes());
+    let mut k: KeyType = [0u8; 32];
+    hk.expand(b"relay-session", &mut k)
+        .expect("HKDF expand of 32 bytes is infallible");
+    k
+}
+
+pub fn derive_directional_key(session_key: &[u8; 32], label: &[u8]) -> Key {
+    let hk = Hkdf::<Sha256>::new(None, session_key);
+    let mut k: KeyType = [0u8; 32];
+    hk.expand(label, &mut k)
+        .expect("HKDF expand of 32 bytes is infallible");
+    Key::from(k)
+}
+pub fn load_peer_chat_messages(
+    peer: &PeerPublic,
+    storagekey: Key,
+) -> Result<Messages, CryptoErrors> {
+    let hex_path = hex::encode(identity_hash(&peer.public, &peer.verifying));
     let path = peers_dir().as_path().join(&hex_path).join("chat.db");
     let mut msgvec: Vec<Message> = vec![];
     let db = sled::open(path).map_err(|_| CryptoErrors::CorruptedFile)?;
@@ -493,7 +520,7 @@ pub fn insert_message_stored(msg: Message, storagekey: Key, db: Db) -> Result<()
     Ok(())
 }
 pub fn load_peer_chat_file(data: &[u8; 32]) -> Result<Db, CryptoErrors> {
-    let hash = String::from_utf8_lossy(data).to_string();
+    let hash = hex::encode(data).to_string();
     let path = peers_dir().as_path().join(&hash).join("chat.db");
     sled::open(path).map_err(|_| CryptoErrors::CorruptedFile)
 }
@@ -529,6 +556,26 @@ pub fn encrypt_message_stored(msg: &Message, storagekey: &Key) -> Result<Vec<u8>
     let data: Vec<u8> = [nonce.as_slice(), ciphertext.as_slice()].concat();
     Ok(data)
 }
+pub fn encrypt_blob(recipient_pub: &PublicKey, plaintext: &[u8]) -> Result<Vec<u8>, CryptoErrors> {
+    let eph_secret = StaticSecret::random_from_rng(&mut OsRng);
+    let eph_pub = PublicKey::from(&eph_secret);
+    let shared = eph_secret.diffie_hellman(recipient_pub);
+    let hk = Hkdf::<Sha256>::new(None, shared.as_bytes());
+    let mut key: KeyType = [0u8; 32];
+    hk.expand(b"blob", &mut key)
+        .map_err(|_| CryptoErrors::CryptographicError)?;
+    let cipher = ChaCha20Poly1305::new(Key::from_slice(&key));
+    let nonce = ChaCha20Poly1305::generate_nonce(&mut OsRng);
+    let ciphertext = cipher
+        .encrypt(&nonce, plaintext)
+        .map_err(|_| CryptoErrors::CryptographicError)?;
+    let mut out = Vec::with_capacity(32 + 12 + ciphertext.len());
+    out.extend_from_slice(eph_pub.as_bytes());
+    out.extend_from_slice(nonce.as_slice());
+    out.extend_from_slice(&ciphertext);
+    Ok(out)
+}
+
 pub fn decrypt_blob(blob: Vec<u8>, privkey: &StaticSecret) -> Result<Vec<u8>, CryptoErrors> {
     if blob.len() < 44 {
         return Err(CryptoErrors::CorruptedFile);
@@ -551,9 +598,12 @@ pub fn decrypt_blob(blob: Vec<u8>, privkey: &StaticSecret) -> Result<Vec<u8>, Cr
 }
 
 pub fn purge_peer_chat(data: &[u8; 32]) -> Result<(), CryptoErrors> {
-    let hash = String::from_utf8_lossy(data).to_string();
-    let path = peers_dir().as_path().join(hash);
-    remove_dir_all(path).map_err(CryptoErrors::Other)
+    let hash = hex::encode(data);
+    let path = peers_dir().as_path().join(hash).join("chat.db");
+    if path.exists() {
+        remove_dir_all(path).map_err(CryptoErrors::Other)?;
+    }
+    Ok(())
 }
 #[cfg(test)]
 mod tests {
@@ -576,5 +626,20 @@ mod tests {
         let decrypted_data = decrypt_message_stored(&encrypted_data, &storagekey).unwrap();
         let final_item = rmp_serde::from_slice::<Message>(&decrypted_data).unwrap();
         assert_eq!(msg, final_item)
+    }
+    #[test]
+    fn blob_envelope_roundtrip() {
+        let (recipient_priv, recipient_pub) = generate_x25519();
+        let payload = b"an offline blob payload".to_vec();
+        let envelope = encrypt_blob(&recipient_pub, &payload).unwrap();
+        let recovered = decrypt_blob(envelope, &recipient_priv).unwrap();
+        assert_eq!(recovered, payload);
+    }
+    #[test]
+    fn blob_envelope_rejects_wrong_key() {
+        let (_, recipient_pub) = generate_x25519();
+        let (other_priv, _) = generate_x25519();
+        let envelope = encrypt_blob(&recipient_pub, b"secret").unwrap();
+        assert!(decrypt_blob(envelope, &other_priv).is_err());
     }
 }

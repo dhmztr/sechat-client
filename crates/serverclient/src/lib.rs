@@ -4,8 +4,7 @@ use ed25519_dalek::*;
 use futures::stream::{SplitSink, SplitStream};
 use futures_util::{SinkExt, StreamExt};
 use handlers::*;
-use sha2::{Digest, Sha256};
-use std::sync::RwLock;
+use std::sync::{OnceLock, RwLock};
 use std::time::Duration;
 use tokio::{
     net::TcpStream,
@@ -13,7 +12,7 @@ use tokio::{
     time::interval,
 };
 mod generators;
-use generators::*;
+pub use generators::*;
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream, connect_async, tungstenite::Message};
 use x25519_dalek::*;
 
@@ -21,37 +20,64 @@ mod handlers;
 mod structs;
 
 use chrono::Utc;
-use structs::*;
+pub use structs::*;
 
-#[derive(PartialEq, Clone)]
+#[derive(Clone)]
 pub struct OnlinePeer {
     pub keys: PeerPublic,
     pub address: String,
+    pub last_seen: i64,
 }
 
 pub type WsStream = WebSocketStream<MaybeTlsStream<TcpStream>>;
 
+const ONLINE_TTL_SECS: i64 = 35;
+
 static MY_ADDRESS: RwLock<Option<String>> = RwLock::new(None);
 static PEERS: RwLock<Vec<OnlinePeer>> = RwLock::new(vec![]);
 
+static DEBUG: OnceLock<bool> = OnceLock::new();
+
+pub fn debug_enabled() -> bool {
+    *DEBUG.get_or_init(|| std::env::var("SECHAT_DEBUG").is_ok())
+}
+
+#[macro_export]
+macro_rules! debug_log {
+    ($($arg:tt)*) => {
+        if $crate::debug_enabled() {
+            eprintln!("[sechat] {}", format!($($arg)*));
+        }
+    };
+}
+
 pub fn load_online_peers() -> Result<Vec<OnlinePeer>, ClientErrors> {
-    let peers = PEERS
-        .read()
+    let now = Utc::now().timestamp();
+    let mut peers = PEERS
+        .write()
         .map_err(|e| ClientErrors::PeerLoadFailed(format!("lock poisoned: {}", e)))?;
+    peers.retain(|p| now - p.last_seen <= ONLINE_TTL_SECS);
     Ok(peers.clone())
 }
 
 pub fn append_online_peer(hash: [u8; 32], ip_port: String) -> Result<(), ClientErrors> {
+    let peer_data = load_peer_data(&hash).map_err(|_| ClientErrors::UnknownPeer)?;
+    let now = Utc::now().timestamp();
     let mut peers = PEERS
         .write()
         .map_err(|e| ClientErrors::PeerSaveFailed(format!("lock poisoned: {}", e)))?;
-    let peer_data = load_peer_data(&hash).map_err(|_| ClientErrors::UnknownPeer)?;
-    let insertable = OnlinePeer {
-        keys: peer_data,
-        address: ip_port,
-    };
-    if !peers.contains(&insertable) {
-        peers.push(insertable);
+    if let Some(existing) = peers
+        .iter_mut()
+        .find(|p| generate_peer_hash(&p.keys) == hash)
+    {
+        existing.address = ip_port;
+        existing.last_seen = now;
+    } else {
+        peers.push(OnlinePeer {
+            keys: peer_data,
+            address: ip_port,
+            last_seen: now,
+        });
     }
     Ok(())
 }
@@ -60,7 +86,7 @@ pub fn remove_online_peer(hash: [u8; 32]) -> Result<(), ClientErrors> {
     let mut peers = PEERS
         .write()
         .map_err(|e| ClientErrors::PeerSaveFailed(format!("lock poisoned: {}", e)))?;
-    peers.retain(|peer| generate_peer_hash(&peer.keys.public) != hash);
+    peers.retain(|peer| generate_peer_hash(&peer.keys) != hash);
     Ok(())
 }
 
@@ -75,10 +101,18 @@ pub fn get_or_set_my_address(new_address: Option<String>) -> Option<String> {
 }
 
 async fn connect_to_server(server_address: String) -> Result<WsStream, ClientErrors> {
-    let url = format!("wss://{}/ws", server_address);
-    let (ws, _) = connect_async(url)
-        .await
-        .map_err(|e| ClientErrors::ConnectionFailed(e.to_string()))?;
+    let scheme = if std::env::var("SECHAT_DEV_INSECURE").is_ok() {
+        "ws"
+    } else {
+        "wss"
+    };
+    let url = format!("{scheme}://{}/ws", server_address);
+    debug_log!("connecting to {url}");
+    let (ws, _) = connect_async(&url).await.map_err(|e| {
+        debug_log!("connect to {url} FAILED: {e}");
+        ClientErrors::ConnectionFailed(e.to_string())
+    })?;
+    debug_log!("websocket connected to {url}");
     Ok(ws)
 }
 
@@ -87,10 +121,22 @@ pub async fn run_client(
     signing: SigningKey,
     privkey: StaticSecret,
     server_address: String,
-) -> Result<(), ClientErrors> {
+    events: Sender<ServerEvent>,
+    udp_port: u16,
+    announce_override: Option<String>,
+) -> Result<Sender<ClientToServer>, ClientErrors> {
     let mut connection = connect_to_server(server_address.clone()).await?;
 
-    server_initial_handshake(&public, &signing, &privkey, &mut connection).await?;
+    server_initial_handshake(
+        &public,
+        &signing,
+        &privkey,
+        &mut connection,
+        &events,
+        udp_port,
+        announce_override,
+    )
+    .await?;
 
     let (write, read) = connection.split();
 
@@ -99,34 +145,35 @@ pub async fn run_client(
 
     let write_handle = tokio::spawn(write_loop(out_rx, write));
     let read_handle = tokio::spawn(read_loop(read, in_tx));
-
-    let privkey_for_presence = privkey.clone();
-    let out_tx_for_presence = out_tx.clone();
-    let presence_handle = tokio::spawn(presence_refresh_loop(
-        out_tx_for_presence,
-        privkey_for_presence,
+    let presence_handle = tokio::spawn(presence_refresh_loop(out_tx.clone(), privkey.clone()));
+    let dispatch_handle = tokio::spawn(main_dispatch_loop(
+        in_rx,
+        out_tx.clone(),
+        privkey.clone(),
+        events.clone(),
     ));
 
-    let privkey_for_dispatch = privkey.clone();
-    let dispatch_handle = tokio::spawn(main_dispatch_loop(in_rx, out_tx, privkey_for_dispatch));
+    tokio::spawn(async move {
+        tokio::select! {
+            _ = write_handle => {},
+            _ = read_handle => {},
+            _ = presence_handle => {},
+            _ = dispatch_handle => {},
+        }
+        let _ = events.send(ServerEvent::Disconnected).await;
+    });
 
-    tokio::select! {
-        _ = write_handle => eprintln!("write_loop ended"),
-        _ = read_handle => eprintln!("read_loop ended"),
-        _ = presence_handle => eprintln!("presence_refresh ended"),
-        _ = dispatch_handle => eprintln!("dispatch ended"),
-    }
-
-    Ok(())
+    Ok(out_tx)
 }
 
 pub async fn main_dispatch_loop(
     mut in_rx: Receiver<ServerToClient>,
     out_tx: Sender<ClientToServer>,
     privkey: StaticSecret,
+    events: Sender<ServerEvent>,
 ) {
     while let Some(msg) = in_rx.recv().await {
-        match handle_message(msg, &privkey).await {
+        match handle_message(msg, &privkey, &events).await {
             Ok(Some(response)) => {
                 if out_tx.send(response).await.is_err() {
                     eprintln!("{}", ClientErrors::ChannelClosed);
@@ -141,7 +188,6 @@ pub async fn main_dispatch_loop(
 
 pub async fn presence_refresh_loop(out_tx: Sender<ClientToServer>, privkey: StaticSecret) {
     let mut ticker = interval(Duration::from_secs(15));
-    ticker.tick().await;
 
     loop {
         ticker.tick().await;

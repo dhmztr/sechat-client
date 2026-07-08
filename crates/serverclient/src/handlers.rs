@@ -2,11 +2,9 @@ use crate::structs::*;
 use crate::*;
 use bytes::Bytes;
 use chrono::Utc;
-use crypto::*;
-use ed25519_dalek::*;
 use futures_util::SinkExt;
+use tokio::sync::mpsc::Sender;
 use tokio_tungstenite::tungstenite::Message;
-use x25519_dalek::*;
 
 pub async fn ack_blob(blob_id: String, connection: &mut WsStream) -> Result<(), ClientErrors> {
     let ack_message = generate_ack_blob(blob_id);
@@ -19,7 +17,11 @@ pub async fn ack_blob(blob_id: String, connection: &mut WsStream) -> Result<(), 
         .map_err(|e| ClientErrors::WriteFailed(e.to_string()))
 }
 
-pub async fn handle_blob(blob: BlobPayload) -> Result<(), ClientErrors> {
+pub async fn handle_blob(
+    blob: BlobPayload,
+    my_priv: &StaticSecret,
+    events: &Sender<ServerEvent>,
+) -> Result<(), ClientErrors> {
     match blob {
         BlobPayload::OfflineMessage {
             sender_pub_hash,
@@ -27,7 +29,6 @@ pub async fn handle_blob(blob: BlobPayload) -> Result<(), ClientErrors> {
             ciphertext,
             signature,
         } => {
-            // weryfikacja timestamp - odrzuć stare wiadomości (replay protection)
             let now = Utc::now().timestamp();
             if (now - timestamp).abs() > 86400 * 30 {
                 return Err(ClientErrors::ReplayDetected);
@@ -48,10 +49,28 @@ pub async fn handle_blob(blob: BlobPayload) -> Result<(), ClientErrors> {
             verify_challenge(peer_data.verifying, &bytes_to_verify, &sig)
                 .map_err(|_| ClientErrors::InvalidSignature)?;
 
-            let stored_chat = load_peer_chat_file(&sender_pub_hash)
+            let storage_key = load_storage_key(&peer_data.public, my_priv)
+                .map_err(|_| ClientErrors::KeyDerivationFailed)?;
+            let plaintext = decrypt_message_stored(&ciphertext, &storage_key)
+                .map_err(|_| ClientErrors::DecryptionFailed)?;
+            let sender_msg: crypto::Message = rmp_serde::from_slice(&plaintext)
+                .map_err(|_| ClientErrors::InvalidMessageFormat)?;
+            let msg = crypto::Message::from_parts(sender_msg.text, Author::Peer, timestamp);
+
+            let db = load_peer_chat_file(&sender_pub_hash)
                 .map_err(|e| ClientErrors::ChatStorageFailed(format!("{:?}", e)))?;
-            insert_blob_to_chat(ciphertext, &stored_chat)
+            insert_message_stored(msg, storage_key, db)
                 .map_err(|e| ClientErrors::ChatStorageFailed(format!("{:?}", e)))?;
+
+            crate::debug_log!(
+                "offline message from {} stored in chat.db",
+                hex::encode(sender_pub_hash)
+            );
+            let _ = events
+                .send(ServerEvent::BlobStored {
+                    sender_hash: sender_pub_hash,
+                })
+                .await;
         }
         BlobPayload::Purge {
             sender_pub_hash,
@@ -81,6 +100,7 @@ pub async fn handle_blob(blob: BlobPayload) -> Result<(), ClientErrors> {
 pub async fn handle_message(
     msg: ServerToClient,
     privkey: &StaticSecret,
+    events: &Sender<ServerEvent>,
 ) -> Result<Option<ClientToServer>, ClientErrors> {
     match msg.payload {
         ServerMessage::PendingBlob {
@@ -88,16 +108,25 @@ pub async fn handle_message(
             blob,
             timestamp: _,
         } => {
-            let decrypted_blob =
-                decrypt_blob(blob, privkey).map_err(|_| ClientErrors::DecryptionFailed)?;
+            crate::debug_log!(
+                "pending blob {} ({} bytes) — decrypting",
+                blob_id,
+                blob.len()
+            );
+            let decrypted_blob = decrypt_blob(blob, privkey).map_err(|_| {
+                crate::debug_log!("blob {blob_id} decrypt FAILED (envelope mismatch/wrong key)");
+                ClientErrors::DecryptionFailed
+            })?;
             let deserialized_blob: BlobPayload = rmp_serde::from_slice(&decrypted_blob)
                 .map_err(|e| ClientErrors::DeserializationFailed(e.to_string()))?;
-            handle_blob(deserialized_blob).await?;
+            handle_blob(deserialized_blob, privkey, events).await?;
+            crate::debug_log!("blob {blob_id} handled + acked");
             let ack_message = generate_ack_blob(blob_id);
             Ok(Some(ClientToServer::new(ack_message, None)))
         }
         ServerMessage::PendingBlobsEnd => Ok(None),
         ServerMessage::PeerOnline { hash, ip_port } => {
+            crate::debug_log!("peer online {} at {}", hex::encode(hash), ip_port);
             append_online_peer(hash, ip_port)?;
             Ok(None)
         }
@@ -110,11 +139,13 @@ pub async fn handle_message(
             ip_port,
             punchtimestamp,
         } => {
-            tokio::spawn(async move {
-                if let Err(e) = punch_hole(token, ip_port, punchtimestamp) {
-                    eprintln!("punch_hole failed: {:?}", e);
-                }
-            });
+            let _ = events
+                .send(ServerEvent::PunchHole {
+                    token,
+                    ip_port,
+                    punchtimestamp,
+                })
+                .await;
             Ok(None)
         }
         ServerMessage::AuthOk { observed_address } => {
@@ -124,7 +155,17 @@ pub async fn handle_message(
         ServerMessage::AuthFailed { reason } => Err(ClientErrors::AuthFailed(reason)),
         ServerMessage::Error { reason } => Err(ClientErrors::ServerError(reason)),
         ServerMessage::RequestHolePunch { pub_key, token } => {
-            let response = if check_if_connection_wanted(pub_key) == true {
+            let known = load_peer_data(&pub_key).is_ok();
+            crate::debug_log!(
+                "hole-punch request from {} — {}",
+                hex::encode(pub_key),
+                if known {
+                    "ACCEPT (known peer)"
+                } else {
+                    "DENY (unknown peer)"
+                }
+            );
+            let response = if known {
                 ClientMessage::RequestAccepted { token }
             } else {
                 ClientMessage::RequestDenied { token }
@@ -132,7 +173,7 @@ pub async fn handle_message(
             Ok(Some(ClientToServer::new(response, None)))
         }
         ServerMessage::RequestDenied {
-            token,
+            token: _,
             pub_key,
             reason,
         } => {
@@ -140,7 +181,24 @@ pub async fn handle_message(
                 RequestDeniedReason::PeerDeclined => "Peer declined your p2p request".into(),
                 RequestDeniedReason::Timeout => "Request timed out try again later".into(),
             };
-            propagate_deny_to_client(pub_key, reason_string);
+            let _ = events
+                .send(ServerEvent::HolePunchDenied {
+                    peer: pub_key,
+                    reason: reason_string,
+                })
+                .await;
+            Ok(None)
+        }
+        ServerMessage::RelayData {
+            sender_hash,
+            payload,
+        } => {
+            let _ = events
+                .send(ServerEvent::RelayData {
+                    sender_hash,
+                    payload,
+                })
+                .await;
             Ok(None)
         }
     }
@@ -151,23 +209,55 @@ pub async fn server_initial_handshake(
     signing: &SigningKey,
     privkey: &StaticSecret,
     conn: &mut WsStream,
+    events: &Sender<ServerEvent>,
+    udp_port: u16,
+    announce_override: Option<String>,
 ) -> Result<String, ClientErrors> {
     let timestamp = Utc::now().timestamp();
-    let auth_message = generate_authenticate_message(public.to_bytes(), signing, timestamp)
-        .map_err(|_| ClientErrors::KeyDerivationFailed)?;
+    let auth_message = generate_authenticate_message(
+        public.to_bytes(),
+        signing.verifying_key().to_bytes(),
+        signing,
+        timestamp,
+    )
+    .map_err(|_| ClientErrors::KeyDerivationFailed)?;
     let auth_bytes = rmp_serde::to_vec(&auth_message)
         .map_err(|e| ClientErrors::SerializationFailed(e.to_string()))?;
     conn.send(Message::Binary(Bytes::from(auth_bytes)))
         .await
         .map_err(|e| ClientErrors::WriteFailed(e.to_string()))?;
+    crate::debug_log!(
+        "auth sent (x25519={}, verifying={})",
+        hex::encode(public.to_bytes()),
+        hex::encode(signing.verifying_key().to_bytes())
+    );
 
     let response = receive_message(conn).await?;
     let observed_address = match response.payload {
-        ServerMessage::AuthOk { observed_address } => observed_address,
-        ServerMessage::AuthFailed { reason } => return Err(ClientErrors::AuthFailed(reason)),
-        _ => return Err(ClientErrors::UnexpectedHandshakeMessage),
+        ServerMessage::AuthOk { observed_address } => {
+            crate::debug_log!("auth OK — server sees us at {observed_address}");
+            observed_address
+        }
+        ServerMessage::AuthFailed { reason } => {
+            crate::debug_log!("auth FAILED: {reason}");
+            return Err(ClientErrors::AuthFailed(reason));
+        }
+        other => {
+            crate::debug_log!("unexpected handshake reply: {other:?}");
+            return Err(ClientErrors::UnexpectedHandshakeMessage);
+        }
     };
-    get_or_set_my_address(Some(observed_address.clone()));
+    let announce = announce_override.unwrap_or_else(|| match observed_address.rsplit_once(':') {
+        Some((ip, _)) => format!("{ip}:{udp_port}"),
+        None => observed_address.clone(),
+    });
+    crate::debug_log!("announcing presence as {announce}");
+    get_or_set_my_address(Some(announce));
+    let _ = events
+        .send(ServerEvent::Authenticated {
+            observed_address: observed_address.clone(),
+        })
+        .await;
 
     loop {
         let msg = receive_message(conn).await?;
@@ -182,7 +272,7 @@ pub async fn server_initial_handshake(
                     decrypt_blob(blob, privkey).map_err(|_| ClientErrors::DecryptionFailed)?;
                 let deserialized_blob: BlobPayload = rmp_serde::from_slice(&decrypted_blob)
                     .map_err(|e| ClientErrors::DeserializationFailed(e.to_string()))?;
-                handle_blob(deserialized_blob).await?;
+                handle_blob(deserialized_blob, privkey, events).await?;
                 ack_blob(blob_id, conn).await?;
             }
             ServerMessage::AuthFailed { reason } => return Err(ClientErrors::AuthFailed(reason)),

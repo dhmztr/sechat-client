@@ -1,0 +1,16 @@
+[package]
+name = "client"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+crypto = { path = "../crypto" }
+serverclient = { path = "../serverclient" }
+p2p = { path = "../p2p" }
+tokio = { version = "1.52.3", features = ["full"] }
+anyhow = "1.0.100"
+ed25519-dalek = "2.2.0"
+x25519-dalek = "2.0.1"
+hex = "0.4.3"
+chrono = "0.4.44"
+rpassword = "7.4.0"
