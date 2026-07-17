@@ -12,12 +12,13 @@ use rand_core::{OsRng, RngCore};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use sled::{Db, IVec};
+#[cfg(unix)]
+use std::os::unix::fs::OpenOptionsExt;
 use std::sync::OnceLock;
 use std::{fmt, fs::remove_dir_all};
 use std::{
     fs::{self, OpenOptions},
     io::{Read, Write},
-    os::unix::fs::OpenOptionsExt,
     path::PathBuf,
 };
 static SECHAT_DIR: OnceLock<PathBuf> = OnceLock::new();
