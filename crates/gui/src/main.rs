@@ -318,6 +318,22 @@ impl App {
                 );
             }
             AppEvent::SessionDown { .. } => {}
+            AppEvent::ConnectRetrying {
+                peer,
+                attempt,
+                delay_secs,
+            } => {
+                self.status = format!(
+                    "Connecting to {}… (attempt {attempt}, next in {delay_secs}s)",
+                    client::fingerprint(&peer)
+                );
+            }
+            AppEvent::ConnectGaveUp { peer } => {
+                self.status = format!(
+                    "Could not reach {}; will retry when it comes online",
+                    client::fingerprint(&peer)
+                );
+            }
             AppEvent::Disconnected => {
                 self.status = String::from("Disconnected from server");
             }

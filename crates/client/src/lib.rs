@@ -12,8 +12,9 @@ use crypto::{
 use ed25519_dalek::VerifyingKey;
 use p2p::{SessionEvent, Transport, am_i_first, initial_handshake, punch_hole, start_session};
 use serverclient::{
-    ClientMessage, ClientToServer, ServerEvent, generate_offline_message, generate_p2p_request,
-    generate_purge_message, generate_unannounce_message, load_online_peers, run_client,
+    ClientMessage, ClientToServer, ServerEvent, generate_announce_message,
+    generate_offline_message, generate_p2p_request, generate_purge_message,
+    generate_unannounce_message, get_or_set_my_address, load_online_peers, run_client,
 };
 use tokio::net::UdpSocket;
 use tokio::sync::{Mutex, mpsc};
@@ -118,23 +119,230 @@ pub struct ChatLine {
 
 #[derive(Clone, Debug)]
 pub enum AppEvent {
-    Connected { observed_address: String },
-    PeerOnline { id: [u8; 32] },
-    PeerOffline { id: [u8; 32] },
-    MessageArrived { peer: [u8; 32], from_me: bool },
-    HolePunchDenied { peer: [u8; 32], reason: String },
-    SessionUp { peer: [u8; 32], direct: bool },
-    SessionDown { peer: [u8; 32] },
+    Connected {
+        observed_address: String,
+    },
+    PeerOnline {
+        id: [u8; 32],
+    },
+    PeerOffline {
+        id: [u8; 32],
+    },
+    MessageArrived {
+        peer: [u8; 32],
+        from_me: bool,
+    },
+    HolePunchDenied {
+        peer: [u8; 32],
+        reason: String,
+    },
+    SessionUp {
+        peer: [u8; 32],
+        direct: bool,
+    },
+    SessionDown {
+        peer: [u8; 32],
+    },
+    /// A P2P connect attempt failed and will be retried after `delay_secs`.
+    ConnectRetrying {
+        peer: [u8; 32],
+        attempt: u32,
+        delay_secs: u64,
+    },
+    /// Gave up connecting after the maximum number of attempts (parked until the
+    /// peer comes online again or the user reconnects).
+    ConnectGaveUp {
+        peer: [u8; 32],
+    },
     Disconnected,
     Error(String),
 }
 
 enum Command {
-    Send { peer: [u8; 32], text: String },
-    Connect { peer: [u8; 32] },
-    Purge { peer: [u8; 32] },
+    Send {
+        peer: [u8; 32],
+        text: String,
+    },
+    Connect {
+        peer: [u8; 32],
+    },
+    Purge {
+        peer: [u8; 32],
+    },
+    /// Announce presence to all known peers now (e.g. right after adding one).
+    AnnounceNow,
     SetServer(String),
     Shutdown,
+}
+
+// --- P2P connect retry (air-tight, bounded exponential backoff) ---------------
+
+const MAX_CONNECT_ATTEMPTS: u32 = 5;
+const RETRY_BACKOFF_CAP_SECS: u64 = 30;
+const RETRY_TICK_MS: u64 = 500;
+
+/// A live "I want to be connected to this peer" intent, driven by the retry tick
+/// in `orchestrate`. Owned by that single loop — never shared across tasks.
+struct ConnectIntent {
+    attempts: u32,
+    backoff_secs: u64,
+    due_at: std::time::Instant,
+    online: bool,
+}
+
+impl ConnectIntent {
+    /// A freshly-armed intent that fires an attempt immediately.
+    fn armed(online: bool) -> Self {
+        Self {
+            attempts: 0,
+            backoff_secs: 1,
+            due_at: std::time::Instant::now(),
+            online,
+        }
+    }
+
+    /// Reset attempt counter + backoff so retries resume from scratch.
+    fn rearm(&mut self) {
+        self.attempts = 0;
+        self.backoff_secs = 1;
+        self.due_at = std::time::Instant::now();
+    }
+}
+
+/// What the retry tick should do with one intent right now. Pure decision so it
+/// is unit-testable without tokio or sockets.
+#[derive(Debug, PartialEq, Eq)]
+enum RetryAction {
+    /// Send a punch request now.
+    Punch,
+    /// Attempts exhausted — emit `ConnectGaveUp` once, then park.
+    GiveUp,
+    /// Nothing to do (offline, not due yet, or already parked).
+    Wait,
+    /// A live session exists — the intent is satisfied.
+    Done,
+}
+
+fn next_retry_action(
+    intent: &ConnectIntent,
+    has_session: bool,
+    now: std::time::Instant,
+) -> RetryAction {
+    if has_session {
+        return RetryAction::Done;
+    }
+    if !intent.online {
+        return RetryAction::Wait;
+    }
+    if intent.attempts > MAX_CONNECT_ATTEMPTS {
+        return RetryAction::Wait; // parked
+    }
+    if intent.attempts == MAX_CONNECT_ATTEMPTS {
+        return RetryAction::GiveUp;
+    }
+    if now < intent.due_at {
+        return RetryAction::Wait;
+    }
+    RetryAction::Punch
+}
+
+/// Next backoff delay after a punch (doubles, capped).
+fn bump_backoff(current: u64) -> u64 {
+    (current * 2).min(RETRY_BACKOFF_CAP_SECS)
+}
+
+/// Whether `peer` is currently in the online presence cache.
+fn peer_is_online(peer: &[u8; 32]) -> bool {
+    load_online_peers()
+        .unwrap_or_default()
+        .iter()
+        .any(|p| &identity_hash(&p.keys.public, &p.keys.verifying) == peer)
+}
+
+/// Ask the relay to broker a hole-punch to `peer`. Returns whether the request
+/// was sent. Errors are logged (and surfaced to the UI) but never fatal.
+async fn send_punch_request(
+    peer: &[u8; 32],
+    keys: &Arc<Keys>,
+    server_tx: &mpsc::Sender<ClientToServer>,
+    app_tx: &mpsc::UnboundedSender<AppEvent>,
+) -> bool {
+    let peer_pub = match load_peer_data(peer) {
+        Ok(p) => p,
+        Err(e) => {
+            let _ = app_tx.send(AppEvent::Error(format!("unknown peer: {e}")));
+            return false;
+        }
+    };
+    match generate_p2p_request(&peer_pub.public, &keys.x25519_priv) {
+        Ok(msg) => {
+            serverclient::debug_log!("requesting hole-punch to {}", fingerprint(peer));
+            if server_tx
+                .send(ClientToServer::new(msg, None))
+                .await
+                .is_err()
+            {
+                let _ = app_tx.send(AppEvent::Error("not connected to relay".to_string()));
+                return false;
+            }
+            true
+        }
+        Err(e) => {
+            let _ = app_tx.send(AppEvent::Error(format!("connect request failed: {e}")));
+            false
+        }
+    }
+}
+
+/// One pass of the retry tick: drive every connect-intent according to
+/// `next_retry_action`, with bounded exponential backoff.
+async fn drive_retries(
+    intents: &mut HashMap<[u8; 32], ConnectIntent>,
+    sessions: &SessionMap,
+    keys: &Arc<Keys>,
+    server_tx: &mpsc::Sender<ClientToServer>,
+    app_tx: &mpsc::UnboundedSender<AppEvent>,
+) {
+    let now = std::time::Instant::now();
+    // Snapshot live-session keys once (avoid locking per peer inside the loop).
+    let live: std::collections::HashSet<[u8; 32]> = sessions.lock().await.keys().copied().collect();
+    for (peer, intent) in intents.iter_mut() {
+        let has_session = live.contains(peer);
+        match next_retry_action(intent, has_session, now) {
+            RetryAction::Done => {
+                // Connected — reset the ladder ONCE so a later drop retries fresh.
+                if intent.attempts != 0 || intent.backoff_secs != 1 {
+                    intent.rearm();
+                }
+            }
+            RetryAction::Punch => {
+                if send_punch_request(peer, keys, server_tx, app_tx).await {
+                    // Only advance the ladder when a punch actually left the client.
+                    intent.attempts += 1;
+                    let _ = app_tx.send(AppEvent::ConnectRetrying {
+                        peer: *peer,
+                        attempt: intent.attempts,
+                        delay_secs: intent.backoff_secs,
+                    });
+                    intent.due_at = now + std::time::Duration::from_secs(intent.backoff_secs);
+                    intent.backoff_secs = bump_backoff(intent.backoff_secs);
+                } else {
+                    // Relay unreachable / peer unknown: back off (escalating the
+                    // delay up to the cap) WITHOUT burning an attempt, so a transient
+                    // relay outage never triggers GiveUp yet never hammers the relay.
+                    intent.due_at =
+                        now + std::time::Duration::from_secs(intent.backoff_secs.max(1));
+                    intent.backoff_secs = bump_backoff(intent.backoff_secs);
+                }
+            }
+            RetryAction::GiveUp => {
+                serverclient::debug_log!("giving up P2P connect to {}", fingerprint(peer));
+                let _ = app_tx.send(AppEvent::ConnectGaveUp { peer: *peer });
+                intent.attempts = MAX_CONNECT_ATTEMPTS + 1; // park until re-armed
+            }
+            RetryAction::Wait => {}
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -195,6 +403,9 @@ impl Client {
             VerifyingKey::from_bytes(&verifying).map_err(|_| anyhow!("invalid ed25519 key"))?;
         initialize_peer(&peer_pub, &peer_verifying, &self.keys.x25519_priv)
             .map_err(|e| anyhow!("failed to add peer: {e}"))?;
+        // Announce presence for the new peer immediately (don't wait for the 15s
+        // presence tick) so both sides can discover each other right away.
+        let _ = self.cmd_tx.send(Command::AnnounceNow);
         Ok(identity_hash(&peer_pub, &peer_verifying))
     }
 
@@ -332,6 +543,8 @@ async fn orchestrate(
     udp: Arc<UdpSocket>,
 ) {
     let sessions: SessionMap = Arc::new(Mutex::new(HashMap::new()));
+    // Per-peer connect-intents drive P2P retries; persists across relay reconnects.
+    let mut intents: HashMap<[u8; 32], ConnectIntent> = HashMap::new();
     let mut backoff_secs = 1u64;
     let udp_port = udp.local_addr().map(|a| a.port()).unwrap_or(0);
 
@@ -381,8 +594,14 @@ async fn orchestrate(
             }
         };
 
+        let mut retry_ticker =
+            tokio::time::interval(std::time::Duration::from_millis(RETRY_TICK_MS));
+
         loop {
             tokio::select! {
+                _ = retry_ticker.tick() => {
+                    drive_retries(&mut intents, &sessions, &keys, &server_tx, &app_tx).await;
+                }
                 ev = srv_ev_rx.recv() => {
                     match ev {
                         Some(ServerEvent::Disconnected) | None => {
@@ -392,6 +611,7 @@ async fn orchestrate(
                         Some(event) => {
                             handle_server_event(
                                 event, &keys, &sessions, &server_tx, &app_tx, &udp,
+                                &mut intents,
                             )
                             .await;
                         }
@@ -424,7 +644,10 @@ async fn orchestrate(
                             return;
                         }
                         Some(command) => {
-                            handle_command(command, &keys, &sessions, &server_tx, &app_tx).await;
+                            handle_command(
+                                command, &keys, &sessions, &server_tx, &app_tx, &mut intents,
+                            )
+                            .await;
                         }
                     }
                 }
@@ -443,6 +666,7 @@ async fn handle_server_event(
     server_tx: &mpsc::Sender<ClientToServer>,
     app_tx: &mpsc::UnboundedSender<AppEvent>,
     udp: &Arc<UdpSocket>,
+    intents: &mut HashMap<[u8; 32], ConnectIntent>,
 ) {
     match event {
         ServerEvent::Authenticated { observed_address } => {
@@ -461,9 +685,19 @@ async fn handle_server_event(
             }
         }
         ServerEvent::PeerOnline { hash, .. } => {
+            if let Some(intent) = intents.get_mut(&hash) {
+                intent.online = true;
+                // Un-park: a peer coming back online re-arms a given-up intent.
+                if intent.attempts > MAX_CONNECT_ATTEMPTS {
+                    intent.rearm();
+                }
+            }
             let _ = app_tx.send(AppEvent::PeerOnline { id: hash });
         }
         ServerEvent::PeerOffline { hash } => {
+            if let Some(intent) = intents.get_mut(&hash) {
+                intent.online = false;
+            }
             let _ = app_tx.send(AppEvent::PeerOffline { id: hash });
         }
         ServerEvent::BlobStored { sender_hash } => {
@@ -476,17 +710,23 @@ async fn handle_server_event(
             let _ = app_tx.send(AppEvent::HolePunchDenied { peer, reason });
         }
         ServerEvent::PunchHole {
+            peer_hash,
             ip_port,
             punchtimestamp,
             ..
         } => {
-            let peer = load_online_peers()
-                .unwrap_or_default()
-                .into_iter()
-                .find(|p| p.address == ip_port)
-                .map(|p| p.keys);
+            // Resolve the peer's keys by identity from disk — robust regardless of
+            // whether the peer is currently in the (TTL-pruned) online cache.
+            let peer = load_peer_data(&peer_hash).ok().or_else(|| {
+                load_online_peers()
+                    .unwrap_or_default()
+                    .into_iter()
+                    .find(|p| p.address == ip_port)
+                    .map(|p| p.keys)
+            });
             serverclient::debug_log!(
-                "punch-hole broker: relay says peer at {ip_port} (known peer: {})",
+                "punch-hole broker: peer {} at {ip_port} (known: {})",
+                fingerprint(&peer_hash),
                 peer.is_some()
             );
             if let Some(peer) = peer {
@@ -500,6 +740,11 @@ async fn handle_server_event(
                     udp.clone(),
                     server_tx.clone(),
                 ));
+            } else {
+                serverclient::debug_log!(
+                    "punch-hole for unknown peer {} — ignoring",
+                    fingerprint(&peer_hash)
+                );
             }
         }
         ServerEvent::Disconnected => {}
@@ -512,41 +757,46 @@ async fn handle_command(
     sessions: &SessionMap,
     server_tx: &mpsc::Sender<ClientToServer>,
     app_tx: &mpsc::UnboundedSender<AppEvent>,
+    intents: &mut HashMap<[u8; 32], ConnectIntent>,
 ) {
     match command {
         Command::Connect { peer } => {
-            if sessions.lock().await.contains_key(&peer) {
-                serverclient::debug_log!(
-                    "already connected to {} — skipping hole-punch",
-                    fingerprint(&peer)
-                );
+            if load_peer_data(&peer).is_err() {
+                let _ = app_tx.send(AppEvent::Error("unknown peer".to_string()));
                 return;
             }
-            let peer_pub = match load_peer_data(&peer) {
-                Ok(p) => p,
-                Err(e) => {
-                    let _ = app_tx.send(AppEvent::Error(format!("unknown peer: {e}")));
-                    return;
-                }
-            };
-            match generate_p2p_request(&peer_pub.public, &keys.x25519_priv) {
-                Ok(msg) => {
-                    serverclient::debug_log!("requesting hole-punch to {}", fingerprint(&peer));
-                    if server_tx
-                        .send(ClientToServer::new(msg, None))
-                        .await
-                        .is_err()
-                    {
-                        let _ = app_tx.send(AppEvent::Error("not connected to relay".to_string()));
-                    }
-                }
-                Err(e) => {
-                    let _ = app_tx.send(AppEvent::Error(format!("connect request failed: {e}")));
-                }
+            // Already have a live session? Keep it — don't reset the ladder or
+            // re-punch a working connection.
+            if sessions.lock().await.contains_key(&peer) {
+                serverclient::debug_log!("already connected to {}", fingerprint(&peer));
+                return;
             }
+            // Arm a connect-intent; the retry tick drives the actual punch(es)
+            // with bounded exponential backoff.
+            intents.insert(peer, ConnectIntent::armed(peer_is_online(&peer)));
+            serverclient::debug_log!("armed connect-intent for {}", fingerprint(&peer));
         }
         Command::SetServer(_) | Command::Shutdown => {}
+        Command::AnnounceNow => {
+            let Some(address) = get_or_set_my_address(None) else {
+                serverclient::debug_log!("announce-now skipped: no address yet");
+                return;
+            };
+            let peers = load_peers().unwrap_or_default();
+            let ts = chrono::Utc::now().timestamp();
+            for peer in peers {
+                if let Ok(msg) =
+                    generate_announce_message(&keys.x25519_priv, &peer.public, ts, address.clone())
+                {
+                    let _ = server_tx.send(ClientToServer::new(msg, None)).await;
+                }
+            }
+            serverclient::debug_log!("announced presence to all peers (add-peer trigger)");
+        }
         Command::Purge { peer } => {
+            // Stop retrying / drop any live session for a peer we're purging.
+            intents.remove(&peer);
+            sessions.lock().await.remove(&peer);
             let peer_pub = match load_peer_data(&peer) {
                 Ok(p) => p,
                 Err(e) => {
@@ -845,5 +1095,97 @@ mod tests {
         let cs = vec![contact(1, "aaaa", Some("alice"))];
         assert_eq!(resolve_query(&cs, ""), None);
         assert_eq!(resolve_query(&cs, "zzz"), None);
+    }
+
+    // --- P2P retry decision logic ---------------------------------------------
+
+    use std::time::{Duration, Instant};
+
+    fn intent(attempts: u32, backoff: u64, online: bool, due_in: Option<u64>) -> ConnectIntent {
+        let now = Instant::now();
+        ConnectIntent {
+            attempts,
+            backoff_secs: backoff,
+            online,
+            due_at: match due_in {
+                Some(s) => now + Duration::from_secs(s),
+                None => now, // due now
+            },
+        }
+    }
+
+    #[test]
+    fn retry_first_attempt_fires_when_due_and_online() {
+        let i = intent(0, 1, true, None);
+        assert_eq!(
+            next_retry_action(&i, false, Instant::now()),
+            RetryAction::Punch
+        );
+    }
+
+    #[test]
+    fn retry_waits_when_offline() {
+        let i = intent(0, 1, false, None);
+        assert_eq!(
+            next_retry_action(&i, false, Instant::now()),
+            RetryAction::Wait
+        );
+    }
+
+    #[test]
+    fn retry_waits_when_not_yet_due() {
+        let i = intent(1, 2, true, Some(10));
+        assert_eq!(
+            next_retry_action(&i, false, Instant::now()),
+            RetryAction::Wait
+        );
+    }
+
+    #[test]
+    fn retry_done_when_session_live() {
+        let i = intent(3, 8, true, None);
+        assert_eq!(
+            next_retry_action(&i, true, Instant::now()),
+            RetryAction::Done
+        );
+    }
+
+    #[test]
+    fn retry_gives_up_at_max_attempts() {
+        let i = intent(MAX_CONNECT_ATTEMPTS, 30, true, None);
+        assert_eq!(
+            next_retry_action(&i, false, Instant::now()),
+            RetryAction::GiveUp
+        );
+    }
+
+    #[test]
+    fn retry_parked_past_max_waits() {
+        let i = intent(MAX_CONNECT_ATTEMPTS + 1, 30, true, None);
+        assert_eq!(
+            next_retry_action(&i, false, Instant::now()),
+            RetryAction::Wait
+        );
+    }
+
+    #[test]
+    fn backoff_doubles_and_caps() {
+        assert_eq!(bump_backoff(1), 2);
+        assert_eq!(bump_backoff(2), 4);
+        assert_eq!(bump_backoff(16), 32.min(RETRY_BACKOFF_CAP_SECS));
+        assert_eq!(bump_backoff(RETRY_BACKOFF_CAP_SECS), RETRY_BACKOFF_CAP_SECS);
+    }
+
+    #[test]
+    fn rearm_resets_ladder() {
+        let mut i = intent(MAX_CONNECT_ATTEMPTS + 1, 30, true, Some(100));
+        i.rearm();
+        assert_eq!(i.attempts, 0);
+        assert_eq!(i.backoff_secs, 1);
+        // now due again
+        assert_eq!(
+            next_retry_action(&i, false, Instant::now()),
+            RetryAction::Punch
+        );
     }
 }

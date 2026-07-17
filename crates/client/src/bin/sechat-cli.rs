@@ -67,6 +67,22 @@ async fn main() -> anyhow::Result<()> {
                 AppEvent::SessionDown { peer } => {
                     println!("[session] {} ended", client::fingerprint(&peer));
                 }
+                AppEvent::ConnectRetrying {
+                    peer,
+                    attempt,
+                    delay_secs,
+                } => {
+                    println!(
+                        "[retry] {} attempt {attempt} (next in {delay_secs}s)",
+                        client::fingerprint(&peer)
+                    );
+                }
+                AppEvent::ConnectGaveUp { peer } => {
+                    println!(
+                        "[gave up] {} — will retry when it comes online",
+                        client::fingerprint(&peer)
+                    );
+                }
                 AppEvent::Disconnected => println!("[disconnected]"),
                 AppEvent::Error(e) => println!("[error] {e}"),
             }

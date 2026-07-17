@@ -136,12 +136,14 @@ pub async fn handle_message(
         }
         ServerMessage::PunchHole {
             token,
+            peer_hash,
             ip_port,
             punchtimestamp,
         } => {
             let _ = events
                 .send(ServerEvent::PunchHole {
                     token,
+                    peer_hash,
                     ip_port,
                     punchtimestamp,
                 })
