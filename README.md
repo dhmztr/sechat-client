@@ -1,6 +1,6 @@
 # sechat
 
-[![CI](https://github.com/Lukidere/sechat-client/actions/workflows/ci.yml/badge.svg)](https://github.com/Lukidere/sechat-client/actions/workflows/ci.yml)
+[![CI](https://github.com/dhmztr/sechat-client/actions/workflows/ci.yml/badge.svg)](https://github.com/dhmztr/sechat-client/actions/workflows/ci.yml)
 
 **Experimental peer-to-peer encrypted chat protocol and reference implementation in Rust.**
 
