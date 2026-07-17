@@ -3,23 +3,22 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use client::{AppEvent, ChatLine, Client, Contact};
-use iced::widget::{button, column, container, row, scrollable, text, text_input};
-use iced::{Element, Length, Subscription, Task};
+use iced::widget::{button, column, container, row, scrollable, space, text, text_input};
+use iced::{Element, Length, Size, Subscription, Task, Theme, window};
 use tokio::sync::mpsc::UnboundedReceiver;
 
 const DEFAULT_SERVER: &str = "localhost:3000";
 const EVENT_POLL_INTERVAL_MS: u64 = 200;
 const KEY_LEN: usize = 32;
-const SIDEBAR_WIDTH: f32 = 320.0;
-const KEY_LABEL_WIDTH: f32 = 70.0;
+const SIDEBAR_WIDTH: f32 = 300.0;
 
 type SharedReceiver = Arc<Mutex<Option<UnboundedReceiver<AppEvent>>>>;
 
 fn main() -> iced::Result {
-    iced::application(App::new, App::update, App::view)
+    iced::daemon(App::boot, App::update, App::view)
+        .title(App::title)
+        .theme(App::theme)
         .subscription(App::subscription)
-        .exit_on_close_request(false)
-        .title("SeChat")
         .run()
 }
 
@@ -38,11 +37,12 @@ enum Message {
     AddPeer,
     ServerFieldChanged(String),
     ChangeServer,
-    ToggleOptions,
+    OpenSettings,
+    ToggleTheme,
     AliasChanged(String),
     SetAlias,
     PurgeSelected,
-    WindowClose(iced::window::Id),
+    WindowClose(window::Id),
     DoExit,
     Ignored,
 }
@@ -57,6 +57,9 @@ enum Screen {
 }
 
 struct App {
+    main_id: window::Id,
+    settings_id: Option<window::Id>,
+    dark: bool,
     screen: Screen,
     has_identity: bool,
     client: Option<Client>,
@@ -71,14 +74,21 @@ struct App {
     server_field: String,
     my_keys: Option<(String, String)>,
     unread: HashMap<[u8; 32], usize>,
-    options_open: bool,
     alias_input: String,
     tick: u32,
 }
 
 impl App {
-    fn new() -> Self {
-        Self {
+    fn boot() -> (Self, Task<Message>) {
+        let (main_id, open) = window::open(window::Settings {
+            size: Size::new(980.0, 660.0),
+            min_size: Some(Size::new(720.0, 480.0)),
+            ..window::Settings::default()
+        });
+        let app = Self {
+            main_id,
+            settings_id: None,
+            dark: true,
             screen: Screen::Unlock {
                 password: String::new(),
                 server: client::resolve_server().unwrap_or_else(|| DEFAULT_SERVER.to_string()),
@@ -97,14 +107,30 @@ impl App {
             server_field: String::new(),
             my_keys: None,
             unread: HashMap::new(),
-            options_open: false,
             alias_input: String::new(),
             tick: 0,
+        };
+        (app, open.map(|_| Message::Ignored))
+    }
+
+    fn title(&self, window: window::Id) -> String {
+        if Some(window) == self.settings_id {
+            String::from("SeChat — Settings")
+        } else {
+            String::from("SeChat")
+        }
+    }
+
+    fn theme(&self, _window: window::Id) -> Theme {
+        if self.dark {
+            Theme::TokyoNight
+        } else {
+            Theme::Light
         }
     }
 
     fn subscription(&self) -> Subscription<Message> {
-        let close = iced::window::close_requests().map(Message::WindowClose);
+        let close = window::close_requests().map(Message::WindowClose);
         if self.rx.is_some() {
             let tick = iced::time::every(Duration::from_millis(EVENT_POLL_INTERVAL_MS))
                 .map(|_| Message::Tick);
@@ -170,18 +196,20 @@ impl App {
                 self.change_server();
                 Task::none()
             }
-            Message::WindowClose(_) => {
-                if let Some(client) = &self.client {
-                    client.shutdown();
+            Message::OpenSettings => {
+                if self.settings_id.is_some() {
+                    return Task::none();
                 }
-                return Task::perform(
-                    async { tokio::time::sleep(Duration::from_millis(300)).await },
-                    |_| Message::DoExit,
-                );
+                let (id, open) = window::open(window::Settings {
+                    size: Size::new(460.0, 640.0),
+                    resizable: true,
+                    ..window::Settings::default()
+                });
+                self.settings_id = Some(id);
+                open.map(|_| Message::Ignored)
             }
-            Message::DoExit => return iced::exit(),
-            Message::ToggleOptions => {
-                self.options_open = !self.options_open;
+            Message::ToggleTheme => {
+                self.dark = !self.dark;
                 Task::none()
             }
             Message::AliasChanged(value) => {
@@ -200,6 +228,21 @@ impl App {
                 }
                 Task::none()
             }
+            Message::WindowClose(id) => {
+                if Some(id) == self.settings_id {
+                    self.settings_id = None;
+                    return window::close(id);
+                }
+                // Main window closed: shut down gracefully then exit.
+                if let Some(client) = &self.client {
+                    client.shutdown();
+                }
+                Task::perform(
+                    async { tokio::time::sleep(Duration::from_millis(300)).await },
+                    |_| Message::DoExit,
+                )
+            }
+            Message::DoExit => iced::exit(),
             Message::Ignored => Task::none(),
         }
     }
@@ -261,7 +304,7 @@ impl App {
                 self.rx = shared_rx.lock().ok().and_then(|mut guard| guard.take());
                 self.contacts = client.contacts();
                 self.my_keys = Some(client.my_keys_hex());
-                self.status = String::from("Connecting to server...");
+                self.status = String::from("Connecting to server…");
                 self.client = Some(client);
                 self.screen = Screen::Main;
             }
@@ -292,7 +335,7 @@ impl App {
     fn apply_event(&mut self, event: AppEvent) {
         match event {
             AppEvent::Connected { observed_address } => {
-                self.status = format!("Connected (observed address: {observed_address})");
+                self.status = format!("Connected · seen as {observed_address}");
             }
             AppEvent::PeerOnline { .. } | AppEvent::PeerOffline { .. } => {
                 self.refresh_contacts();
@@ -312,7 +355,7 @@ impl App {
             }
             AppEvent::SessionUp { peer, direct } => {
                 self.status = format!(
-                    "Session with {} up ({})",
+                    "Connected to {} ({})",
                     client::fingerprint(&peer),
                     if direct { "direct P2P" } else { "relay" }
                 );
@@ -441,10 +484,15 @@ impl App {
         };
         client.set_server(addr.clone());
         self.server_field = addr.clone();
-        self.status = format!("reconnecting to {addr}…");
+        self.status = format!("Reconnecting to {addr}…");
     }
 
-    fn view(&self) -> Element<'_, Message> {
+    // --- views ----------------------------------------------------------------
+
+    fn view(&self, window: window::Id) -> Element<'_, Message> {
+        if Some(window) == self.settings_id {
+            return self.settings_view();
+        }
         match &self.screen {
             Screen::Unlock {
                 password,
@@ -469,89 +517,73 @@ impl App {
                 "Create identity",
             )
         };
-        let input = text_input("Password...", password)
+        let input = text_input("Password", password)
             .secure(true)
+            .padding(11)
             .on_input(Message::PasswordChanged)
             .on_submit(Message::SubmitPassword);
-        let server_input = text_input("Server address...", server)
+        let server_input = text_input("Server address", server)
+            .padding(11)
             .on_input(Message::ServerChanged)
             .on_submit(Message::SubmitPassword);
-        let submit = button(action).on_press(Message::SubmitPassword);
+        let submit = button(text(action).size(15))
+            .on_press(Message::SubmitPassword)
+            .style(button::primary)
+            .width(Length::Fill);
         let mut content = column![
-            text(label),
+            accent_text("SeChat", 34.0),
+            text(label).size(14),
             input,
-            text("Relay server").size(14),
+            text("Relay server").size(13),
             server_input,
-            submit
+            submit,
         ]
-        .spacing(12)
-        .max_width(400);
+        .spacing(14)
+        .max_width(360);
         if let Some(error) = error {
-            content = content.push(text(error).size(14));
+            content = content.push(danger_text(error));
         }
-        container(content)
+        let card = container(content).style(container::rounded_box).padding(30);
+        container(card)
             .center_x(Length::Fill)
             .center_y(Length::Fill)
             .into()
     }
 
     fn main_view(&self) -> Element<'_, Message> {
-        let options_btn = button(if self.options_open {
-            "Close options"
-        } else {
-            "\u{2699} Options"
-        })
-        .on_press(Message::ToggleOptions);
-        let panels = row![self.contacts_panel(), self.chat_panel()]
-            .spacing(10)
-            .height(Length::Fill);
-        let mut col = column![row![options_btn].spacing(8), panels];
-        if self.options_open {
-            col = col.push(self.options_panel());
-        }
-        col.push(self.status_bar()).spacing(6).padding(10).into()
-    }
-
-    fn options_panel(&self) -> Element<'_, Message> {
-        column![
-            text("Options").size(18),
-            self.server_area(),
-            self.alias_area(),
-            self.my_keys_area(),
-            text(format!("Data dir: {}", client::data_dir())).size(12),
+        let panels = row![
+            card(
+                self.contacts_panel(),
+                Length::Fixed(SIDEBAR_WIDTH),
+                Length::Fill
+            ),
+            card(self.chat_panel(), Length::Fill, Length::Fill),
         ]
-        .spacing(6)
-        .into()
+        .spacing(12)
+        .height(Length::Fill);
+        column![self.top_bar(), panels, self.status_bar()]
+            .spacing(12)
+            .padding(14)
+            .into()
     }
 
-    fn alias_area(&self) -> Element<'_, Message> {
-        let input = text_input("alias for the selected peer", &self.alias_input)
-            .on_input(Message::AliasChanged)
-            .on_submit(Message::SetAlias)
-            .size(14);
+    fn top_bar(&self) -> Element<'_, Message> {
+        let me = self
+            .client
+            .as_ref()
+            .map(|c| format!("you · {}", c.my_fingerprint()))
+            .unwrap_or_default();
+        let settings_btn = button(text("\u{2699} Settings").size(14))
+            .on_press(Message::OpenSettings)
+            .style(button::secondary);
         row![
-            text("Alias").size(14).width(Length::Fixed(KEY_LABEL_WIDTH)),
-            input,
-            button("Save").on_press(Message::SetAlias)
+            accent_text("SeChat", 24.0),
+            text(me).size(13),
+            space::horizontal(),
+            settings_btn,
         ]
-        .spacing(8)
-        .into()
-    }
-
-    fn server_area(&self) -> Element<'_, Message> {
-        let server_input = text_input("Server address...", &self.server_field)
-            .on_input(Message::ServerFieldChanged)
-            .on_submit(Message::ChangeServer)
-            .size(14);
-        let change_button = button("Change").on_press(Message::ChangeServer);
-        row![
-            text("Server")
-                .size(14)
-                .width(Length::Fixed(KEY_LABEL_WIDTH)),
-            server_input,
-            change_button
-        ]
-        .spacing(8)
+        .spacing(12)
+        .align_y(iced::Alignment::Center)
         .into()
     }
 
@@ -565,37 +597,45 @@ impl App {
             };
             let unread = self.unread.get(&contact.id).copied().unwrap_or(0);
             let label = if unread > 0 {
-                format!("{dot} {}   \u{1F535} {unread}", contact.label())
+                format!("{dot}  {}   \u{1F535} {unread}", contact.label())
             } else {
-                format!("{dot} {}", contact.label())
+                format!("{dot}  {}", contact.label())
+            };
+            let selected = self.selected == Some(contact.id);
+            let style = if selected {
+                button::primary
+            } else {
+                button::text
             };
             list = list.push(
                 button(text(label).size(14))
                     .on_press(Message::SelectPeer(contact.id))
-                    .width(Length::Fill),
+                    .width(Length::Fill)
+                    .style(style),
             );
         }
         let contacts_list = scrollable(list).height(Length::Fill);
-        column![
-            text("Contacts").size(18),
-            contacts_list,
-            self.add_peer_area()
-        ]
-        .spacing(10)
-        .width(Length::Fixed(SIDEBAR_WIDTH))
-        .into()
+        column![heading("Contacts"), contacts_list, self.add_peer_area()]
+            .spacing(12)
+            .width(Length::Fill)
+            .into()
     }
 
     fn add_peer_area(&self) -> Element<'_, Message> {
         let x25519_input = text_input("x25519 public key (hex)", &self.add_x25519)
             .on_input(Message::AddPeerX25519Changed)
-            .size(14);
+            .padding(8)
+            .size(13);
         let verifying_input = text_input("ed25519 verifying key (hex)", &self.add_verifying)
             .on_input(Message::AddPeerVerifyingChanged)
-            .size(14);
-        let add_button = button("Add peer").on_press(Message::AddPeer);
+            .padding(8)
+            .size(13);
+        let add_button = button(text("Add peer").size(14))
+            .on_press(Message::AddPeer)
+            .style(button::primary)
+            .width(Length::Fill);
         column![
-            text("Add peer").size(16),
+            text("Add a peer").size(15),
             x25519_input,
             verifying_input,
             add_button
@@ -606,45 +646,128 @@ impl App {
 
     fn chat_panel(&self) -> Element<'_, Message> {
         let Some(selected) = self.selected else {
-            return container(text("Select a contact to start chatting"))
+            return container(text("Select a contact to start chatting").size(15))
                 .center_x(Length::Fill)
                 .center_y(Length::Fill)
                 .into();
         };
-        let peer_name = self.peer_fingerprint(&selected);
-        let mut messages = column![].spacing(4);
+        let peer_name = self.peer_label(&selected);
+        let mut messages = column![].spacing(6);
         for line in &self.history {
-            let author = if line.from_me {
-                "You"
-            } else {
-                peer_name.as_str()
-            };
-            messages = messages.push(text(format!("{author}: {}", line.text)).size(14));
+            messages = messages.push(message_bubble(line));
         }
         let conversation = scrollable(messages)
             .height(Length::Fill)
             .width(Length::Fill);
-        let draft_input = text_input("Type a message...", &self.draft)
+        let draft_input = text_input("Type a message…", &self.draft)
             .on_input(Message::DraftChanged)
-            .on_submit(Message::SendDraft);
-        let send_button = button("Send").on_press(Message::SendDraft);
-        let compose = row![draft_input, send_button].spacing(8);
+            .on_submit(Message::SendDraft)
+            .padding(10);
+        let send_button = button(text("Send").size(14))
+            .on_press(Message::SendDraft)
+            .style(button::primary);
+        let compose = row![draft_input, send_button]
+            .spacing(8)
+            .align_y(iced::Alignment::Center);
         let header = row![
             text(format!("Chat with {peer_name}"))
                 .size(18)
-                .width(Length::Fill),
-            button(text("Purge").size(14)).on_press(Message::PurgeSelected)
+                .width(Length::Fill)
+                .style(|t: &Theme| text::Style {
+                    color: Some(t.palette().primary),
+                }),
+            button(text("Purge").size(14))
+                .on_press(Message::PurgeSelected)
+                .style(button::danger),
         ]
-        .spacing(8);
+        .spacing(8)
+        .align_y(iced::Alignment::Center);
         column![header, conversation, compose]
             .spacing(10)
             .width(Length::Fill)
             .into()
     }
 
+    fn status_bar(&self) -> Element<'_, Message> {
+        container(text(&self.status).size(13))
+            .style(container::rounded_box)
+            .padding([6, 12])
+            .width(Length::Fill)
+            .into()
+    }
+
+    // --- settings window ------------------------------------------------------
+
+    fn settings_view(&self) -> Element<'_, Message> {
+        let theme_btn = button(
+            text(if self.dark {
+                "\u{2600} Switch to light"
+            } else {
+                "\u{1F319} Switch to dark"
+            })
+            .size(14),
+        )
+        .on_press(Message::ToggleTheme)
+        .style(button::secondary)
+        .width(Length::Fill);
+
+        let sections = column![
+            heading("Settings"),
+            section("Appearance", theme_btn.into()),
+            section("Relay server", self.server_area()),
+            section("Peer alias", self.alias_area()),
+            section("Your keys", self.my_keys_area()),
+            section(
+                "Storage",
+                text(format!("Data dir: {}", client::data_dir()))
+                    .size(12)
+                    .into()
+            ),
+        ]
+        .spacing(16);
+
+        container(scrollable(sections).height(Length::Fill))
+            .padding(20)
+            .into()
+    }
+
+    fn server_area(&self) -> Element<'_, Message> {
+        let server_input = text_input("host:port", &self.server_field)
+            .on_input(Message::ServerFieldChanged)
+            .on_submit(Message::ChangeServer)
+            .padding(9)
+            .size(14);
+        let change_button = button(text("Change").size(14))
+            .on_press(Message::ChangeServer)
+            .style(button::secondary);
+        row![server_input, change_button]
+            .spacing(8)
+            .align_y(iced::Alignment::Center)
+            .into()
+    }
+
+    fn alias_area(&self) -> Element<'_, Message> {
+        let input = text_input("name for the selected peer", &self.alias_input)
+            .on_input(Message::AliasChanged)
+            .on_submit(Message::SetAlias)
+            .padding(9)
+            .size(14);
+        row![
+            input,
+            button(text("Save").size(14))
+                .on_press(Message::SetAlias)
+                .style(button::secondary)
+        ]
+        .spacing(8)
+        .align_y(iced::Alignment::Center)
+        .into()
+    }
+
     fn my_keys_area(&self) -> Element<'_, Message> {
         let Some((x25519_hex, verifying_hex)) = &self.my_keys else {
-            return column![].into();
+            return text("Unlock your identity to see your keys.")
+                .size(13)
+                .into();
         };
         let fingerprint = self
             .client
@@ -652,46 +775,98 @@ impl App {
             .map(Client::my_fingerprint)
             .unwrap_or_default();
         let key_row = |label: &'static str, value: &str| {
-            row![
-                text(label).size(12).width(Length::Fixed(KEY_LABEL_WIDTH)),
+            column![
+                text(label).size(12),
                 text_input("", value)
                     .on_input(|_| Message::Ignored)
-                    .size(12)
+                    .padding(7)
+                    .size(12),
             ]
-            .spacing(8)
+            .spacing(3)
         };
         column![
-            text(format!(
-                "My keys (share with peers) — fingerprint: {fingerprint}"
-            ))
-            .size(14),
+            text(format!("Fingerprint: {fingerprint}")).size(13),
+            text("Share both keys so a peer can add you:").size(12),
             key_row("x25519", x25519_hex),
-            key_row("verifying", verifying_hex)
+            key_row("ed25519 verifying", verifying_hex),
         ]
-        .spacing(4)
+        .spacing(8)
         .into()
     }
 
-    fn status_bar(&self) -> Element<'_, Message> {
-        let me = self
-            .client
-            .as_ref()
-            .map(|client| format!("Me: {}", client.my_fingerprint()))
-            .unwrap_or_else(|| String::from("Me: (not started)"));
-        row![
-            text(me).size(14),
-            text(&self.status).size(14).width(Length::Fill)
-        ]
-        .spacing(20)
-        .into()
-    }
-
-    fn peer_fingerprint(&self, id: &[u8; 32]) -> String {
+    fn peer_label(&self, id: &[u8; 32]) -> String {
         self.contacts
             .iter()
             .find(|contact| &contact.id == id)
             .map(|contact| contact.label().to_string())
             .unwrap_or_else(|| client::fingerprint(id))
+    }
+}
+
+// --- free helpers -------------------------------------------------------------
+
+fn accent_text(label: &str, size: f32) -> Element<'static, Message> {
+    text(label.to_string())
+        .size(size)
+        .style(|t: &Theme| text::Style {
+            color: Some(t.palette().primary),
+        })
+        .into()
+}
+
+fn heading(label: &str) -> Element<'static, Message> {
+    accent_text(label, 18.0)
+}
+
+fn danger_text(label: &str) -> Element<'static, Message> {
+    text(label.to_string())
+        .size(14)
+        .style(|t: &Theme| text::Style {
+            color: Some(t.palette().danger),
+        })
+        .into()
+}
+
+fn section<'a>(title: &str, body: Element<'a, Message>) -> Element<'a, Message> {
+    let inner = column![text(title.to_string()).size(15), body].spacing(8);
+    container(inner)
+        .style(container::rounded_box)
+        .padding(14)
+        .width(Length::Fill)
+        .into()
+}
+
+fn card<'a>(content: Element<'a, Message>, width: Length, height: Length) -> Element<'a, Message> {
+    container(content)
+        .style(container::rounded_box)
+        .padding(14)
+        .width(width)
+        .height(height)
+        .into()
+}
+
+fn message_bubble(line: &ChatLine) -> Element<'static, Message> {
+    let from_me = line.from_me;
+    let bubble = container(text(line.text.clone()).size(14))
+        .padding(10)
+        .max_width(440)
+        .style(move |t: &Theme| {
+            let ext = t.extended_palette();
+            let base = container::rounded_box(t);
+            if from_me {
+                container::Style {
+                    background: Some(ext.primary.strong.color.into()),
+                    text_color: Some(ext.primary.strong.text),
+                    ..base
+                }
+            } else {
+                base
+            }
+        });
+    if from_me {
+        row![space::horizontal(), bubble].into()
+    } else {
+        row![bubble, space::horizontal()].into()
     }
 }
 
