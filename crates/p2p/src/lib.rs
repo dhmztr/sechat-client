@@ -261,6 +261,10 @@ pub async fn initial_handshake(
                 if !msg.verify(&remote_x, &remote.verifying) {
                     continue;
                 }
+                // Reject a replayed (stale) Init.
+                if !frame_is_fresh(msg.timestamp, Utc::now().timestamp()) {
+                    continue;
+                }
                 if let P2PMessage::Init { ephermal } = msg.payload {
                     return derive_session_key(myephermal_priv, &PublicKey::from(ephermal))
                         .map_err(|_| P2PError::CryptographicError);
@@ -283,7 +287,16 @@ pub struct SessionHandle {
 }
 
 const HEARTBEAT_SECS: u64 = 15;
-const SESSION_IDLE_TIMEOUT_SECS: u64 = 60;
+const SESSION_IDLE_TIMEOUT_SECS: u64 = 45;
+/// Max accepted age (seconds, absolute) of a signed frame's timestamp. Bounds
+/// cross-session replay on the relay path (static DH key, per-session counter
+/// reset) and rejects replayed `End`/`HeartBeat`. Wide enough for real clock skew.
+const MAX_FRAME_AGE_SECS: i64 = 120;
+
+/// True if a signed frame's timestamp is within the accepted freshness window.
+fn frame_is_fresh(frame_ts: i64, now: i64) -> bool {
+    (now - frame_ts).abs() <= MAX_FRAME_AGE_SECS
+}
 
 pub enum Transport {
     Direct {
@@ -313,6 +326,10 @@ async fn handle_inbound_frame(
         Err(_) => return true,
     };
     if !pm.verify(peer_x, verifying) {
+        return true;
+    }
+    // Reject stale/replayed frames (bounds cross-session replay + replayed End).
+    if !frame_is_fresh(pm.timestamp, Utc::now().timestamp()) {
         return true;
     }
     match pm.payload {
@@ -710,5 +727,15 @@ mod tests {
         )
         .await;
         assert_eq!(observed, Some("203.0.113.7:41000".to_string()));
+    }
+
+    #[test]
+    fn frame_freshness_window() {
+        let now = 1_000_000i64;
+        assert!(frame_is_fresh(now, now));
+        assert!(frame_is_fresh(now - MAX_FRAME_AGE_SECS, now)); // edge: exactly max age
+        assert!(frame_is_fresh(now + MAX_FRAME_AGE_SECS, now)); // clock ahead within window
+        assert!(!frame_is_fresh(now - MAX_FRAME_AGE_SECS - 1, now)); // too old -> replay
+        assert!(!frame_is_fresh(now + MAX_FRAME_AGE_SECS + 1, now)); // too far future
     }
 }
