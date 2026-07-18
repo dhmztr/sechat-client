@@ -100,7 +100,19 @@ pub fn get_or_set_my_address(new_address: Option<String>) -> Option<String> {
     }
 }
 
+/// Install the rustls ring crypto provider once per process. rustls 0.23 requires
+/// an explicit process-level provider; without this, the first `wss://` connect
+/// panics.
+fn ensure_crypto_provider() {
+    use std::sync::Once;
+    static ONCE: Once = Once::new();
+    ONCE.call_once(|| {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+    });
+}
+
 async fn connect_to_server(server_address: String) -> Result<WsStream, ClientErrors> {
+    ensure_crypto_provider();
     let scheme = if std::env::var("SECHAT_DEV_INSECURE").is_ok() {
         "ws"
     } else {
