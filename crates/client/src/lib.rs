@@ -576,13 +576,10 @@ async fn orchestrate(
     loop {
         let (srv_ev_tx, mut srv_ev_rx) = mpsc::channel::<ServerEvent>(100);
 
-        let stun_addr = std::env::var("SECHAT_STUN").ok().unwrap_or_else(|| {
-            let host = server_address
-                .rsplit_once(':')
-                .map(|(h, _)| h)
-                .unwrap_or(server_address.as_str());
-            format!("{host}:3478")
-        });
+        let stun_addr = std::env::var("SECHAT_STUN")
+            .ok()
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| default_stun_addr(&server_address));
         let announce = p2p::stun_discover(
             &udp,
             &stun_addr,
@@ -1065,6 +1062,21 @@ async fn connect_session(
     });
 }
 
+/// Default STUN address derived from the relay server address: drop any port, and
+/// if the host starts with `relay.` swap that label to `stun.` (so STUN can be a
+/// separate grey-cloud DNS record while the relay stays proxied). Port is 3478.
+fn default_stun_addr(server_address: &str) -> String {
+    let host = server_address
+        .rsplit_once(':')
+        .map(|(h, _)| h)
+        .unwrap_or(server_address);
+    let host = host
+        .strip_prefix("relay.")
+        .map(|rest| format!("stun.{rest}"))
+        .unwrap_or_else(|| host.to_string());
+    format!("{host}:3478")
+}
+
 fn resolve_query(contacts: &[Contact], query: &str) -> Option<[u8; 32]> {
     let q = query.trim();
     if q.is_empty() {
@@ -1131,6 +1143,21 @@ mod tests {
         let cs = vec![contact(1, "aaaa", Some("alice"))];
         assert_eq!(resolve_query(&cs, ""), None);
         assert_eq!(resolve_query(&cs, "zzz"), None);
+    }
+
+    #[test]
+    fn stun_default_swaps_relay_prefix() {
+        assert_eq!(
+            default_stun_addr("relay.dhmztr.com"),
+            "stun.dhmztr.com:3478"
+        );
+        assert_eq!(
+            default_stun_addr("relay.dhmztr.com:3000"),
+            "stun.dhmztr.com:3478"
+        );
+        // no relay. prefix -> host unchanged
+        assert_eq!(default_stun_addr("localhost:3000"), "localhost:3478");
+        assert_eq!(default_stun_addr("example.com"), "example.com:3478");
     }
 
     // --- P2P retry decision logic ---------------------------------------------

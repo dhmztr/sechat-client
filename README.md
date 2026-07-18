@@ -60,7 +60,7 @@ address. Useful environment variables:
 | `SECHAT_DEV_INSECURE` | Connect over plain `ws://` (must match the server)    |
 | `SECHAT_DEBUG`        | Verbose tracing (client stderr / server `tracing`)    |
 | `SECHAT_SERVER`       | Override the saved relay address                      |
-| `SECHAT_STUN`         | Override the STUN address (default: server host:3478) |
+| `SECHAT_STUN`         | Override the STUN address (default: server host with a `relay.` prefix swapped to `stun.`, port 3478) |
 | `HOME`                | Data dir root (`$HOME/.sechat`) — set per instance    |
 
 ### Two peers on one machine
