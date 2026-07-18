@@ -4,13 +4,24 @@ use std::time::Duration;
 
 use client::{AppEvent, ChatLine, Client, Contact};
 use iced::widget::{button, column, container, row, scrollable, space, text, text_input};
-use iced::{Element, Length, Size, Subscription, Task, Theme, window};
+use iced::{
+    Border, Color, Element, Length, Shadow, Size, Subscription, Task, Theme, Vector, window,
+};
 use tokio::sync::mpsc::UnboundedReceiver;
 
 const DEFAULT_SERVER: &str = "localhost:3000";
 const EVENT_POLL_INTERVAL_MS: u64 = 200;
 const KEY_LEN: usize = 32;
 const SIDEBAR_WIDTH: f32 = 300.0;
+const RAIL_WIDTH: f32 = 56.0;
+const CARD_RADIUS: f32 = 12.0;
+
+/// Which icon-rail destination is currently front-and-center.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum RailTab {
+    Contacts,
+    Chat,
+}
 
 type SharedReceiver = Arc<Mutex<Option<UnboundedReceiver<AppEvent>>>>;
 
@@ -43,6 +54,7 @@ enum Message {
     SetAlias,
     PurgeSelected,
     RemoveSelected,
+    SelectRail(RailTab),
     WindowClose(window::Id),
     DoExit,
     Ignored,
@@ -77,6 +89,7 @@ struct App {
     unread: HashMap<[u8; 32], usize>,
     alias_input: String,
     tick: u32,
+    rail_tab: RailTab,
 }
 
 impl App {
@@ -110,6 +123,7 @@ impl App {
             unread: HashMap::new(),
             alias_input: String::new(),
             tick: 0,
+            rail_tab: RailTab::Contacts,
         };
         (app, open.map(|_| Message::Ignored))
     }
@@ -167,6 +181,7 @@ impl App {
             }
             Message::SelectPeer(id) => {
                 self.select_peer(id);
+                self.rail_tab = RailTab::Chat;
                 Task::none()
             }
             Message::DraftChanged(draft) => {
@@ -238,6 +253,10 @@ impl App {
                     self.status = format!("Removed {}", client::fingerprint(&peer));
                     self.refresh_contacts();
                 }
+                Task::none()
+            }
+            Message::SelectRail(tab) => {
+                self.rail_tab = tab;
                 Task::none()
             }
             Message::WindowClose(id) => {
@@ -543,128 +562,175 @@ impl App {
             .style(button::primary)
             .width(Length::Fill);
         let mut content = column![
-            accent_text("SeChat", 34.0),
+            accent_text("SeChat", 36.0),
+            muted_text("SECURE · PEER-TO-PEER · ENCRYPTED"),
+            space::vertical().height(Length::Fixed(6.0)),
+            section_header("Unlock"),
             text(label).size(14),
             input,
-            text("Relay server").size(13),
+            section_header("Relay server"),
             server_input,
+            space::vertical().height(Length::Fixed(4.0)),
             submit,
         ]
-        .spacing(14)
-        .max_width(360);
+        .spacing(12)
+        .max_width(380);
         if let Some(error) = error {
             content = content.push(danger_text(error));
         }
-        let card = container(content).style(container::rounded_box).padding(30);
-        container(card)
+        let panel = container(content).style(card_style).padding(34);
+        container(panel)
+            .style(shell_style)
             .center_x(Length::Fill)
             .center_y(Length::Fill)
             .into()
     }
 
     fn main_view(&self) -> Element<'_, Message> {
-        let panels = row![
-            card(
+        let content = match self.rail_tab {
+            RailTab::Contacts => card(
                 self.contacts_panel(),
                 Length::Fixed(SIDEBAR_WIDTH),
-                Length::Fill
+                Length::Fill,
             ),
-            card(self.chat_panel(), Length::Fill, Length::Fill),
+            RailTab::Chat => card(self.chat_panel(), Length::Fill, Length::Fill),
+        };
+        let body = row![self.icon_rail(), self.workspace(content)]
+            .spacing(0)
+            .height(Length::Fill);
+        container(body).style(shell_style).into()
+    }
+
+    /// Narrow left-hand column of icon buttons — the control-panel rail.
+    fn icon_rail(&self) -> Element<'_, Message> {
+        let rail = column![
+            accent_text("\u{1F512}", 22.0),
+            space::vertical().height(Length::Fixed(10.0)),
+            icon_button(
+                "\u{1F465}",
+                "Contacts",
+                self.rail_tab == RailTab::Contacts,
+                Some(Message::SelectRail(RailTab::Contacts)),
+            ),
+            icon_button(
+                "\u{2709}",
+                "Chat",
+                self.rail_tab == RailTab::Chat,
+                Some(Message::SelectRail(RailTab::Chat)),
+            ),
+            space::vertical(),
+            icon_button("\u{2699}", "Settings", false, Some(Message::OpenSettings)),
+            icon_button(
+                "\u{23FB}",
+                "Quit",
+                false,
+                Some(Message::WindowClose(self.main_id))
+            ),
         ]
-        .spacing(12)
-        .height(Length::Fill);
-        column![self.top_bar(), panels, self.status_bar()]
-            .spacing(12)
-            .padding(14)
+        .spacing(8)
+        .padding([12, 6])
+        .align_x(iced::Alignment::Center);
+        container(rail)
+            .style(rail_style)
+            .width(Length::Fixed(RAIL_WIDTH))
+            .height(Length::Fill)
             .into()
     }
 
-    fn top_bar(&self) -> Element<'_, Message> {
+    /// The main working area: header, the active card, then the status strip.
+    fn workspace<'a>(&'a self, content: Element<'a, Message>) -> Element<'a, Message> {
+        column![self.header_bar(), content, self.status_bar()]
+            .spacing(12)
+            .padding(14)
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .into()
+    }
+
+    fn header_bar(&self) -> Element<'_, Message> {
         let me = self
             .client
             .as_ref()
             .map(|c| format!("you · {}", c.my_fingerprint()))
             .unwrap_or_default();
-        let settings_btn = button(text("\u{2699} Settings").size(14))
-            .on_press(Message::OpenSettings)
-            .style(button::secondary);
-        row![
-            accent_text("SeChat", 24.0),
-            text(me).size(13),
+        let title = match self.rail_tab {
+            RailTab::Contacts => "Contacts",
+            RailTab::Chat => "Chat",
+        };
+        let inner = row![
+            accent_text("SeChat", 22.0),
+            column![section_header(title), muted_text(&me)].spacing(2),
             space::horizontal(),
-            settings_btn,
+            button(text(format!("\u{2699}  {}", "Settings".to_uppercase())).size(13))
+                .on_press(Message::OpenSettings)
+                .style(button::secondary),
         ]
-        .spacing(12)
-        .align_y(iced::Alignment::Center)
-        .into()
+        .spacing(14)
+        .align_y(iced::Alignment::Center);
+        container(inner)
+            .style(card_style)
+            .padding([10, 16])
+            .width(Length::Fill)
+            .into()
     }
 
     fn contacts_panel(&self) -> Element<'_, Message> {
-        let mut list = column![].spacing(4);
+        let mut list = column![].spacing(6);
+        if self.contacts.is_empty() {
+            list = list.push(muted_text("No contacts yet — add a peer below."));
+        }
         for contact in &self.contacts {
-            let dot = if contact.online {
-                "\u{1F7E2}"
-            } else {
-                "\u{26AA}"
-            };
             let unread = self.unread.get(&contact.id).copied().unwrap_or(0);
-            let label = if unread > 0 {
-                format!("{dot}  {}   \u{1F535} {unread}", contact.label())
-            } else {
-                format!("{dot}  {}", contact.label())
-            };
             let selected = self.selected == Some(contact.id);
-            let style = if selected {
-                button::primary
-            } else {
-                button::text
-            };
-            list = list.push(
-                button(text(label).size(14))
-                    .on_press(Message::SelectPeer(contact.id))
-                    .width(Length::Fill)
-                    .style(style),
-            );
+            list = list.push(contact_row(contact, unread, selected));
         }
         let contacts_list = scrollable(list).height(Length::Fill);
-        column![heading("Contacts"), contacts_list, self.add_peer_area()]
-            .spacing(12)
-            .width(Length::Fill)
-            .into()
+        column![
+            section_header("Contacts"),
+            contacts_list,
+            self.add_peer_area()
+        ]
+        .spacing(12)
+        .width(Length::Fill)
+        .into()
     }
 
     fn add_peer_area(&self) -> Element<'_, Message> {
         let x25519_input = text_input("x25519 public key (hex)", &self.add_x25519)
             .on_input(Message::AddPeerX25519Changed)
-            .padding(8)
+            .padding(9)
             .size(13);
         let verifying_input = text_input("ed25519 verifying key (hex)", &self.add_verifying)
             .on_input(Message::AddPeerVerifyingChanged)
-            .padding(8)
+            .padding(9)
             .size(13);
         let add_button = button(text("Add peer").size(14))
             .on_press(Message::AddPeer)
             .style(button::primary)
             .width(Length::Fill);
-        column![
-            text("Add a peer").size(15),
+        let inner = column![
+            section_header("Add a peer"),
             x25519_input,
             verifying_input,
             add_button
         ]
-        .spacing(6)
-        .into()
+        .spacing(8);
+        container(inner)
+            .style(inset_style)
+            .padding(12)
+            .width(Length::Fill)
+            .into()
     }
 
     fn chat_panel(&self) -> Element<'_, Message> {
         let Some(selected) = self.selected else {
-            return container(text("Select a contact to start chatting").size(15))
+            return container(muted_text("Select a contact to start chatting."))
                 .center_x(Length::Fill)
                 .center_y(Length::Fill)
                 .into();
         };
         let peer_name = self.peer_label(&selected);
-        let mut messages = column![].spacing(6);
+        let mut messages = column![].spacing(8);
         for line in &self.history {
             messages = messages.push(message_bubble(line));
         }
@@ -674,39 +740,48 @@ impl App {
         let draft_input = text_input("Type a message…", &self.draft)
             .on_input(Message::DraftChanged)
             .on_submit(Message::SendDraft)
-            .padding(10);
+            .padding(11);
         let send_button = button(text("Send").size(14))
             .on_press(Message::SendDraft)
             .style(button::primary);
-        let compose = row![draft_input, send_button]
-            .spacing(8)
-            .align_y(iced::Alignment::Center);
+        let compose = container(
+            row![draft_input, send_button]
+                .spacing(8)
+                .align_y(iced::Alignment::Center),
+        )
+        .style(inset_style)
+        .padding(8);
         let header = row![
-            text(format!("Chat with {peer_name}"))
-                .size(18)
-                .width(Length::Fill)
-                .style(|t: &Theme| text::Style {
+            column![
+                section_header("Chat"),
+                text(peer_name).size(18).style(|t: &Theme| text::Style {
                     color: Some(t.palette().primary),
                 }),
-            button(text("Purge").size(14))
+            ]
+            .spacing(2)
+            .width(Length::Fill),
+            button(text("Purge").size(13))
                 .on_press(Message::PurgeSelected)
                 .style(button::secondary),
-            button(text("Remove").size(14))
+            button(text("Remove").size(13))
                 .on_press(Message::RemoveSelected)
                 .style(button::danger),
         ]
         .spacing(8)
         .align_y(iced::Alignment::Center);
         column![header, conversation, compose]
-            .spacing(10)
+            .spacing(12)
             .width(Length::Fill)
             .into()
     }
 
     fn status_bar(&self) -> Element<'_, Message> {
-        container(text(&self.status).size(13))
-            .style(container::rounded_box)
-            .padding([6, 12])
+        let inner = row![accent_text("\u{2022}", 14.0), text(&self.status).size(13),]
+            .spacing(8)
+            .align_y(iced::Alignment::Center);
+        container(inner)
+            .style(inset_style)
+            .padding([7, 14])
             .width(Length::Fill)
             .into()
     }
@@ -727,21 +802,22 @@ impl App {
         .width(Length::Fill);
 
         let sections = column![
-            heading("Settings"),
+            accent_text("Settings", 26.0),
+            muted_text("CONTROL PANEL"),
+            space::vertical().height(Length::Fixed(6.0)),
             section("Appearance", theme_btn.into()),
             section("Relay server", self.server_area()),
             section("Peer alias", self.alias_area()),
             section("Your keys", self.my_keys_area()),
             section(
                 "Storage",
-                text(format!("Data dir: {}", client::data_dir()))
-                    .size(12)
-                    .into()
+                muted_text(&format!("Data dir: {}", client::data_dir())),
             ),
         ]
         .spacing(16);
 
         container(scrollable(sections).height(Length::Fill))
+            .style(shell_style)
             .padding(20)
             .into()
     }
@@ -829,8 +905,24 @@ fn accent_text(label: &str, size: f32) -> Element<'static, Message> {
         .into()
 }
 
-fn heading(label: &str) -> Element<'static, Message> {
-    accent_text(label, 18.0)
+/// Uppercase, letter-spaced accent label used as a small section title.
+fn section_header(label: &str) -> Element<'static, Message> {
+    text(spaced_upper(label))
+        .size(13)
+        .style(|t: &Theme| text::Style {
+            color: Some(t.extended_palette().primary.strong.color),
+        })
+        .into()
+}
+
+/// Dim, secondary body text.
+fn muted_text(label: &str) -> Element<'static, Message> {
+    text(label.to_string())
+        .size(13)
+        .style(|t: &Theme| text::Style {
+            color: Some(t.extended_palette().background.strong.color),
+        })
+        .into()
 }
 
 fn danger_text(label: &str) -> Element<'static, Message> {
@@ -842,40 +934,214 @@ fn danger_text(label: &str) -> Element<'static, Message> {
         .into()
 }
 
+/// Emulate letter-spacing by inserting thin spaces between uppercased chars.
+fn spaced_upper(label: &str) -> String {
+    label
+        .to_uppercase()
+        .chars()
+        .map(|c| c.to_string())
+        .collect::<Vec<_>>()
+        .join("\u{2009}")
+}
+
 fn section<'a>(title: &str, body: Element<'a, Message>) -> Element<'a, Message> {
-    let inner = column![text(title.to_string()).size(15), body].spacing(8);
+    let inner = column![section_header(title), body].spacing(10);
     container(inner)
-        .style(container::rounded_box)
-        .padding(14)
+        .style(card_style)
+        .padding(16)
         .width(Length::Fill)
         .into()
 }
 
+/// A rounded, bordered tile with a soft shadow — the dashboard's core surface.
 fn card<'a>(content: Element<'a, Message>, width: Length, height: Length) -> Element<'a, Message> {
     container(content)
-        .style(container::rounded_box)
-        .padding(14)
+        .style(card_style)
+        .padding(16)
         .width(width)
         .height(height)
+        .into()
+}
+
+/// The near-black app background.
+fn shell_style(theme: &Theme) -> container::Style {
+    let ext = theme.extended_palette();
+    container::Style {
+        background: Some(ext.background.base.color.into()),
+        ..container::Style::default()
+    }
+}
+
+/// The vertical icon rail — a slightly raised, bordered column.
+fn rail_style(theme: &Theme) -> container::Style {
+    let ext = theme.extended_palette();
+    container::Style {
+        background: Some(ext.background.weak.color.into()),
+        border: Border {
+            color: ext.background.strong.color,
+            width: 1.0,
+            radius: 0.0.into(),
+        },
+        ..container::Style::default()
+    }
+}
+
+/// A raised card: rounded corners, 1px border, soft shadow.
+fn card_style(theme: &Theme) -> container::Style {
+    let ext = theme.extended_palette();
+    container::Style {
+        background: Some(ext.background.weak.color.into()),
+        border: Border {
+            color: ext.background.strong.color,
+            width: 1.0,
+            radius: CARD_RADIUS.into(),
+        },
+        shadow: Shadow {
+            color: Color::from_rgba(0.0, 0.0, 0.0, 0.35),
+            offset: Vector::new(0.0, 4.0),
+            blur_radius: 16.0,
+        },
+        ..container::Style::default()
+    }
+}
+
+/// A recessed panel (inputs, status strip) — sits inside a card.
+fn inset_style(theme: &Theme) -> container::Style {
+    let ext = theme.extended_palette();
+    container::Style {
+        background: Some(ext.background.weakest.color.into()),
+        border: Border {
+            color: ext.background.strong.color,
+            width: 1.0,
+            radius: (CARD_RADIUS - 2.0).into(),
+        },
+        ..container::Style::default()
+    }
+}
+
+/// A single rail entry: glyph on top, tiny caption below, highlighted when active.
+fn icon_button(
+    glyph: &str,
+    caption: &str,
+    active: bool,
+    on_press: Option<Message>,
+) -> Element<'static, Message> {
+    let inner = column![
+        text(glyph.to_string()).size(20),
+        text(caption.to_uppercase()).size(8),
+    ]
+    .spacing(2)
+    .align_x(iced::Alignment::Center);
+    let style = if active {
+        button::primary
+    } else {
+        button::text
+    };
+    let mut btn = button(inner)
+        .width(Length::Fill)
+        .padding([8, 2])
+        .style(style);
+    if let Some(msg) = on_press {
+        btn = btn.on_press(msg);
+    }
+    btn.into()
+}
+
+/// A contact list item: status dot, name, optional unread badge.
+fn contact_row(contact: &Contact, unread: usize, selected: bool) -> Element<'static, Message> {
+    let online = contact.online;
+    let dot = container(text("").size(1))
+        .width(Length::Fixed(9.0))
+        .height(Length::Fixed(9.0))
+        .style(move |t: &Theme| {
+            let ext = t.extended_palette();
+            let color = if online {
+                ext.success.strong.color
+            } else {
+                ext.background.strong.color
+            };
+            container::Style {
+                background: Some(color.into()),
+                border: Border {
+                    color,
+                    width: 0.0,
+                    radius: 5.0.into(),
+                },
+                ..container::Style::default()
+            }
+        });
+    let mut row = row![
+        dot,
+        text(contact.label().to_string()).size(14),
+        space::horizontal(),
+    ]
+    .spacing(10)
+    .align_y(iced::Alignment::Center);
+    if unread > 0 {
+        row = row.push(unread_badge(unread));
+    }
+    let style = if selected {
+        button::primary
+    } else {
+        button::text
+    };
+    button(row)
+        .on_press(Message::SelectPeer(contact.id))
+        .width(Length::Fill)
+        .padding([9, 12])
+        .style(style)
+        .into()
+}
+
+/// Small accent-filled pill showing the unread count.
+fn unread_badge(count: usize) -> Element<'static, Message> {
+    container(text(count.to_string()).size(12))
+        .padding([1, 8])
+        .style(|t: &Theme| {
+            let ext = t.extended_palette();
+            container::Style {
+                background: Some(ext.primary.strong.color.into()),
+                text_color: Some(ext.primary.strong.text),
+                border: Border {
+                    color: ext.primary.strong.color,
+                    width: 0.0,
+                    radius: 8.0.into(),
+                },
+                ..container::Style::default()
+            }
+        })
         .into()
 }
 
 fn message_bubble(line: &ChatLine) -> Element<'static, Message> {
     let from_me = line.from_me;
     let bubble = container(text(line.text.clone()).size(14))
-        .padding(10)
+        .padding(11)
         .max_width(440)
         .style(move |t: &Theme| {
             let ext = t.extended_palette();
-            let base = container::rounded_box(t);
             if from_me {
                 container::Style {
                     background: Some(ext.primary.strong.color.into()),
                     text_color: Some(ext.primary.strong.text),
-                    ..base
+                    border: Border {
+                        color: ext.primary.strong.color,
+                        width: 1.0,
+                        radius: CARD_RADIUS.into(),
+                    },
+                    ..container::Style::default()
                 }
             } else {
-                base
+                container::Style {
+                    background: Some(ext.background.weak.color.into()),
+                    text_color: Some(ext.background.base.text),
+                    border: Border {
+                        color: ext.background.strong.color,
+                        width: 1.0,
+                        radius: CARD_RADIUS.into(),
+                    },
+                    ..container::Style::default()
+                }
             }
         });
     if from_me {
