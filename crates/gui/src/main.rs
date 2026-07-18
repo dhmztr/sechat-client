@@ -4,13 +4,11 @@ use std::time::Duration;
 
 use client::{AppEvent, ChatLine, Client, Contact};
 use iced::widget::{button, column, container, row, scrollable, space, text, text_input};
-use iced::{
-    Border, Color, Element, Length, Shadow, Size, Subscription, Task, Theme, Vector, window,
-};
+use iced::{Border, Element, Length, Size, Subscription, Task, Theme, window};
 use tokio::sync::mpsc::UnboundedReceiver;
 
 const DEFAULT_SERVER: &str = "localhost:3000";
-const EVENT_POLL_INTERVAL_MS: u64 = 200;
+const EVENT_POLL_INTERVAL_MS: u64 = 400;
 const KEY_LEN: usize = 32;
 const SIDEBAR_WIDTH: f32 = 300.0;
 const RAIL_WIDTH: f32 = 56.0;
@@ -88,7 +86,6 @@ struct App {
     my_keys: Option<(String, String)>,
     unread: HashMap<[u8; 32], usize>,
     alias_input: String,
-    tick: u32,
     rail_tab: RailTab,
 }
 
@@ -122,7 +119,6 @@ impl App {
             my_keys: None,
             unread: HashMap::new(),
             alias_input: String::new(),
-            tick: 0,
             rail_tab: RailTab::Contacts,
         };
         (app, open.map(|_| Message::Ignored))
@@ -172,11 +168,9 @@ impl App {
             Message::SubmitPassword => self.submit_password(),
             Message::Started(result) => self.on_started(result),
             Message::Tick => {
+                // Only pulls queued events; contacts refresh on PeerOnline/Offline
+                // events (no per-tick disk reads — that janks the software renderer).
                 self.drain_events();
-                self.tick = self.tick.wrapping_add(1);
-                if self.tick % 5 == 0 {
-                    self.refresh_contacts();
-                }
                 Task::none()
             }
             Message::SelectPeer(id) => {
@@ -996,11 +990,8 @@ fn card_style(theme: &Theme) -> container::Style {
             width: 1.0,
             radius: CARD_RADIUS.into(),
         },
-        shadow: Shadow {
-            color: Color::from_rgba(0.0, 0.0, 0.0, 0.35),
-            offset: Vector::new(0.0, 4.0),
-            blur_radius: 16.0,
-        },
+        // No shadow: blurred shadows are very expensive in the tiny-skia software
+        // renderer (repainted every frame) and made the UI sluggish.
         ..container::Style::default()
     }
 }
@@ -1031,6 +1022,7 @@ fn icon_button(
         text(caption.to_uppercase()).size(8),
     ]
     .spacing(2)
+    .width(Length::Fill)
     .align_x(iced::Alignment::Center);
     let style = if active {
         button::primary
