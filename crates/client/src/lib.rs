@@ -4,10 +4,10 @@ use std::sync::Arc;
 
 use anyhow::{Context, anyhow};
 use crypto::{
-    Author, Keys, Message, PeerPublic, decrypt_keyfile, encrypt_keyfile, generate_ed25519,
-    generate_x25519, identity_hash, initialize_peer, insert_message_stored, load_peer_chat_file,
-    load_peer_chat_messages, load_peer_data, load_peers, load_storage_key, purge_peer_chat,
-    read_keyfile, relay_session_key, sechat_dir,
+    Author, Keys, Message, PeerPublic, decrypt_keyfile, delete_peer, encrypt_keyfile,
+    generate_ed25519, generate_x25519, identity_hash, initialize_peer, insert_message_stored,
+    load_peer_chat_file, load_peer_chat_messages, load_peer_data, load_peers, load_storage_key,
+    purge_peer_chat, read_keyfile, relay_session_key, sechat_dir,
 };
 use ed25519_dalek::VerifyingKey;
 use p2p::{SessionEvent, Transport, am_i_first, initial_handshake, punch_hole, start_session};
@@ -91,6 +91,23 @@ pub fn alias_of(id: &[u8; 32]) -> Option<String> {
     load_aliases().get(id).cloned()
 }
 
+/// Drop a peer's alias from the local alias file.
+pub fn remove_alias(id: &[u8; 32]) -> anyhow::Result<()> {
+    let mut map = load_aliases();
+    if map.remove(id).is_none() {
+        return Ok(());
+    }
+    let mut out = String::new();
+    for (k, v) in &map {
+        out.push_str(&hex::encode(k));
+        out.push('\t');
+        out.push_str(v);
+        out.push('\n');
+    }
+    std::fs::write(aliases_path(), out)?;
+    Ok(())
+}
+
 pub fn data_dir() -> String {
     sechat_dir().display().to_string()
 }
@@ -167,6 +184,9 @@ enum Command {
         peer: [u8; 32],
     },
     Purge {
+        peer: [u8; 32],
+    },
+    RemovePeer {
         peer: [u8; 32],
     },
     /// Announce presence to all known peers now (e.g. right after adding one).
@@ -391,6 +411,11 @@ impl Client {
 
     pub fn purge(&self, peer: [u8; 32]) {
         let _ = self.cmd_tx.send(Command::Purge { peer });
+    }
+
+    /// Remove a peer entirely (delete their keys, chat and alias locally).
+    pub fn remove_peer(&self, peer: [u8; 32]) {
+        let _ = self.cmd_tx.send(Command::RemovePeer { peer });
     }
 
     pub fn shutdown(&self) {
@@ -777,6 +802,17 @@ async fn handle_command(
             serverclient::debug_log!("armed connect-intent for {}", fingerprint(&peer));
         }
         Command::SetServer(_) | Command::Shutdown => {}
+        Command::RemovePeer { peer } => {
+            // Drop retry-intent + live session, then delete keys, chat and alias.
+            intents.remove(&peer);
+            sessions.lock().await.remove(&peer);
+            if let Err(e) = delete_peer(&peer) {
+                let _ = app_tx.send(AppEvent::Error(format!("remove peer failed: {e}")));
+                return;
+            }
+            let _ = remove_alias(&peer);
+            serverclient::debug_log!("removed peer {}", fingerprint(&peer));
+        }
         Command::AnnounceNow => {
             let Some(address) = get_or_set_my_address(None) else {
                 serverclient::debug_log!("announce-now skipped: no address yet");

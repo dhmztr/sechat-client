@@ -606,6 +606,16 @@ pub fn purge_peer_chat(data: &[u8; 32]) -> Result<(), CryptoErrors> {
     }
     Ok(())
 }
+
+/// Remove a peer entirely — their `peer.pub` and the whole conversation dir.
+pub fn delete_peer(data: &[u8; 32]) -> Result<(), CryptoErrors> {
+    let hash = hex::encode(data);
+    let path = peers_dir().as_path().join(hash);
+    if path.exists() {
+        remove_dir_all(path).map_err(CryptoErrors::Other)?;
+    }
+    Ok(())
+}
 #[cfg(test)]
 mod tests {
     use super::*;

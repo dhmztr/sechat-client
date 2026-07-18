@@ -42,6 +42,7 @@ enum Message {
     AliasChanged(String),
     SetAlias,
     PurgeSelected,
+    RemoveSelected,
     WindowClose(window::Id),
     DoExit,
     Ignored,
@@ -225,6 +226,17 @@ impl App {
                     client.purge(peer);
                     self.history.clear();
                     self.status = String::from("Conversation purged");
+                }
+                Task::none()
+            }
+            Message::RemoveSelected => {
+                if let (Some(client), Some(peer)) = (&self.client, self.selected) {
+                    client.remove_peer(peer);
+                    self.selected = None;
+                    self.history.clear();
+                    self.unread.remove(&peer);
+                    self.status = format!("Removed {}", client::fingerprint(&peer));
+                    self.refresh_contacts();
                 }
                 Task::none()
             }
@@ -678,6 +690,9 @@ impl App {
                 }),
             button(text("Purge").size(14))
                 .on_press(Message::PurgeSelected)
+                .style(button::secondary),
+            button(text("Remove").size(14))
+                .on_press(Message::RemoveSelected)
                 .style(button::danger),
         ]
         .spacing(8)

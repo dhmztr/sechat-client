@@ -173,6 +173,16 @@ async fn main() -> anyhow::Result<()> {
                 },
                 None => println!("usage: purge <peer>"),
             },
+            Some("remove") => match parts.next() {
+                Some(fp) => match find_peer(&cli, fp) {
+                    Some(id) => {
+                        cli.remove_peer(id);
+                        println!("removed peer {}", client::fingerprint(&id));
+                    }
+                    None => println!("no such peer"),
+                },
+                None => println!("usage: remove <peer>"),
+            },
             Some("history") => match parts.next() {
                 Some(fp) => match find_peer(&cli, fp) {
                     Some(id) => match cli.history(&id) {
@@ -241,6 +251,7 @@ fn print_help() {
     println!("  msg <peer> <text>               send a message (P2P if live, else offline)");
     println!("  history <peer>                  print the stored conversation");
     println!("  purge <peer>                    delete the conversation (both sides)");
+    println!("  remove <peer>                   remove the peer entirely (keys + chat + alias)");
     println!("  (<peer> = alias, alias prefix, or fingerprint prefix)");
     println!("  help, ?                         show this help message");
     println!("  quit, exit                      exit the application");
