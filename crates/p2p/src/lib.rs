@@ -7,7 +7,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::net::UdpSocket;
 use tokio::sync::mpsc;
-use tokio::time::{Duration, timeout};
+use tokio::time::{Duration, Instant, interval, sleep_until, timeout};
 use x25519_dalek::{PublicKey, StaticSecret};
 
 #[derive(Deserialize, Serialize)]
@@ -224,23 +224,6 @@ async fn send_peer_message(
     Ok(())
 }
 
-async fn recv_peer_datagram(
-    socket: &UdpSocket,
-    buf: &mut [u8],
-    remote_addr: SocketAddr,
-    secs: u64,
-) -> Result<usize, P2PError> {
-    loop {
-        let (len, addr) = timeout(Duration::from_secs(secs), socket.recv_from(buf))
-            .await
-            .map_err(|_| P2PError::Timeout)?
-            .map_err(|_| P2PError::CommunicationError)?;
-        if addr == remote_addr {
-            return Ok(len);
-        }
-    }
-}
-
 pub async fn initial_handshake(
     my_pubkey: &PublicKey,
     myephermal_priv: &StaticSecret,
@@ -252,31 +235,39 @@ pub async fn initial_handshake(
 ) -> Result<[u8; 32], P2PError> {
     let remote_x = remote.public.to_bytes();
     let mut buf = [0u8; 1024];
-    let amount: usize;
 
     let init = || P2PMessage::Init {
         ephermal: *myephermal_pub,
     };
 
-    if am_i_first(my_pubkey.as_bytes(), &remote_x) {
-        send_peer_message(socket, remote_addr, init(), my_pubkey, my_signing).await?;
-        amount = recv_peer_datagram(socket, &mut buf, remote_addr, 5).await?;
-    } else {
-        amount = recv_peer_datagram(socket, &mut buf, remote_addr, 5).await?;
-        send_peer_message(socket, remote_addr, init(), my_pubkey, my_signing).await?;
-    }
+    // Both sides send their Init and then wait for the peer's. We keep resending
+    // ours (UDP is lossy) and, crucially, IGNORE any datagram that is not a valid
+    // signed Init from this peer: right after the hole punch the socket still has
+    // leftover Ping packets queued, and reading one of those as the handshake
+    // message is what used to make direct P2P flaky (fell back to relay).
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut resend = interval(Duration::from_millis(500));
 
-    let peerinit: PeerMessage =
-        rmp_serde::from_slice(&buf[..amount]).map_err(|_| P2PError::DeserializationFailed)?;
-    if !peerinit.verify(&remote_x, &remote.verifying) {
-        return Err(P2PError::CryptographicError);
-    }
-    match peerinit.payload {
-        P2PMessage::Init { ephermal } => {
-            derive_session_key(myephermal_priv, &PublicKey::from(ephermal))
-                .map_err(|_| P2PError::CryptographicError)
+    loop {
+        tokio::select! {
+            _ = resend.tick() => {
+                let _ = send_peer_message(socket, remote_addr, init(), my_pubkey, my_signing).await;
+            }
+            recvd = socket.recv_from(&mut buf) => {
+                let Ok((amount, _src)) = recvd else { continue };
+                let Ok(msg) = rmp_serde::from_slice::<PeerMessage>(&buf[..amount]) else {
+                    continue; // leftover Ping / junk
+                };
+                if !msg.verify(&remote_x, &remote.verifying) {
+                    continue;
+                }
+                if let P2PMessage::Init { ephermal } = msg.payload {
+                    return derive_session_key(myephermal_priv, &PublicKey::from(ephermal))
+                        .map_err(|_| P2PError::CryptographicError);
+                }
+            }
+            _ = sleep_until(deadline) => return Err(P2PError::Timeout),
         }
-        _ => Err(P2PError::CommunicationError),
     }
 }
 
