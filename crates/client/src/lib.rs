@@ -7,10 +7,13 @@ use crypto::{
     Author, Keys, Message, PeerPublic, decrypt_keyfile, delete_peer, encrypt_keyfile,
     generate_ed25519, generate_x25519, identity_hash, initialize_peer, insert_message_stored,
     load_peer_chat_file, load_peer_chat_messages, load_peer_data, load_peers, load_storage_key,
-    purge_peer_chat, read_keyfile, relay_session_key, sechat_dir,
+    purge_peer_chat, read_keyfile, sechat_dir,
 };
 use ed25519_dalek::VerifyingKey;
-use p2p::{SessionEvent, Transport, am_i_first, initial_handshake, punch_hole, start_session};
+use p2p::{
+    SessionEvent, Transport, am_i_first, initial_handshake, punch_hole, relay_handshake,
+    start_session,
+};
 use serverclient::{
     ClientMessage, ClientToServer, ServerEvent, generate_announce_message,
     generate_offline_message, generate_p2p_request, generate_purge_message,
@@ -907,10 +910,18 @@ async fn handle_command(
     }
 }
 
+/// Wire up the relay channels: `out_tx` frames are forwarded to the server as
+/// `RelayData` for `peer_id`; inbound `RelayData` is fed back in via `in_tx`.
+/// Returns `(out_tx, in_rx, in_tx)` so the caller can run a handshake over the
+/// channels before handing them to `start_session`.
 fn make_relay(
     peer_id: [u8; 32],
     server_tx: mpsc::Sender<ClientToServer>,
-) -> (Transport, mpsc::Sender<Vec<u8>>) {
+) -> (
+    mpsc::UnboundedSender<Vec<u8>>,
+    mpsc::Receiver<Vec<u8>>,
+    mpsc::Sender<Vec<u8>>,
+) {
     let (out_tx, mut out_rx) = mpsc::unbounded_channel::<Vec<u8>>();
     let (in_tx, in_rx) = mpsc::channel::<Vec<u8>>(100);
     tokio::spawn(async move {
@@ -928,13 +939,45 @@ fn make_relay(
             }
         }
     });
-    (
-        Transport::Relay {
-            out: out_tx,
-            inbound: in_rx,
-        },
-        in_tx,
+    (out_tx, in_rx, in_tx)
+}
+
+/// Establish a relay session: build the relay channels, then run the ephemeral
+/// `relay_handshake` so both peers derive a FRESH per-session key (no static-key
+/// nonce reuse, and forward secrecy). Returns `None` if the handshake fails.
+async fn establish_relay(
+    peer_id: [u8; 32],
+    peer: &PeerPublic,
+    keys: &Arc<Keys>,
+    eph_priv: &x25519_dalek::StaticSecret,
+    eph_pub: &x25519_dalek::PublicKey,
+    server_tx: mpsc::Sender<ClientToServer>,
+) -> Option<(Transport, [u8; 32], mpsc::Sender<Vec<u8>>)> {
+    let (out_tx, mut in_rx, in_tx) = make_relay(peer_id, server_tx);
+    match relay_handshake(
+        &out_tx,
+        &mut in_rx,
+        &keys.x25519_pub,
+        eph_priv,
+        &eph_pub.to_bytes(),
+        peer,
+        &keys.ed25519_signing,
     )
+    .await
+    {
+        Ok(key) => Some((
+            Transport::Relay {
+                out: out_tx,
+                inbound: in_rx,
+            },
+            key,
+            in_tx,
+        )),
+        Err(e) => {
+            serverclient::debug_log!("relay handshake failed: {e:?}");
+            None
+        }
+    }
 }
 
 async fn connect_session(
@@ -995,25 +1038,37 @@ async fn connect_session(
                         "handshake with {} failed — falling back to relay",
                         fingerprint(&peer_id)
                     );
-                    let (t, in_tx) = make_relay(peer_id, server_tx.clone());
-                    (
-                        t,
-                        relay_session_key(&peer.public, &keys.x25519_priv),
-                        Some(in_tx),
-                        false,
+                    match establish_relay(
+                        peer_id,
+                        &peer,
+                        &keys,
+                        &eph_priv,
+                        &eph_pub,
+                        server_tx.clone(),
                     )
+                    .await
+                    {
+                        Some((t, k, in_tx)) => (t, k, Some(in_tx), false),
+                        None => return,
+                    }
                 }
             }
         }
         Err(_) => {
             serverclient::debug_log!("punch to {} timed out — using relay", fingerprint(&peer_id));
-            let (t, in_tx) = make_relay(peer_id, server_tx.clone());
-            (
-                t,
-                relay_session_key(&peer.public, &keys.x25519_priv),
-                Some(in_tx),
-                false,
+            match establish_relay(
+                peer_id,
+                &peer,
+                &keys,
+                &eph_priv,
+                &eph_pub,
+                server_tx.clone(),
             )
+            .await
+            {
+                Some((t, k, in_tx)) => (t, k, Some(in_tx), false),
+                None => return,
+            }
         }
     };
 

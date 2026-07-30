@@ -13,7 +13,10 @@ use tokio::{
 };
 mod generators;
 pub use generators::*;
-use tokio_tungstenite::{MaybeTlsStream, WebSocketStream, connect_async, tungstenite::Message};
+use tokio_tungstenite::{
+    MaybeTlsStream, WebSocketStream, connect_async_with_config,
+    tungstenite::{Message, protocol::WebSocketConfig},
+};
 use x25519_dalek::*;
 
 mod handlers;
@@ -120,10 +123,17 @@ async fn connect_to_server(server_address: String) -> Result<WsStream, ClientErr
     };
     let url = format!("{scheme}://{}/ws", server_address);
     debug_log!("connecting to {url}");
-    let (ws, _) = connect_async(&url).await.map_err(|e| {
-        debug_log!("connect to {url} FAILED: {e}");
-        ClientErrors::ConnectionFailed(e.to_string())
-    })?;
+    // Bound incoming frame/message size so a hostile or compromised relay can't
+    // push huge messagepack payloads to exhaust client memory.
+    let config = WebSocketConfig::default()
+        .max_message_size(Some(256 * 1024))
+        .max_frame_size(Some(256 * 1024));
+    let (ws, _) = connect_async_with_config(&url, Some(config), false)
+        .await
+        .map_err(|e| {
+            debug_log!("connect to {url} FAILED: {e}");
+            ClientErrors::ConnectionFailed(e.to_string())
+        })?;
     debug_log!("websocket connected to {url}");
     Ok(ws)
 }

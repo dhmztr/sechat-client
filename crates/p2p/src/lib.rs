@@ -275,6 +275,57 @@ pub async fn initial_handshake(
     }
 }
 
+/// Relay-path handshake. Mirrors `initial_handshake` but exchanges the signed
+/// ephemeral `Init` over the relay channels (server-forwarded `RelayData`)
+/// instead of a UDP socket. This gives the relay path a FRESH per-session
+/// ephemeral session key — without it the relay reused a static DH key while
+/// resetting the per-session counter, causing catastrophic AEAD nonce reuse
+/// across sessions. It also grants the relay path forward secrecy.
+pub async fn relay_handshake(
+    out: &mpsc::UnboundedSender<Vec<u8>>,
+    inbound: &mut mpsc::Receiver<Vec<u8>>,
+    my_pubkey: &PublicKey,
+    myephermal_priv: &StaticSecret,
+    myephermal_pub: &[u8; 32],
+    remote: &PeerPublic,
+    my_signing: &SigningKey,
+) -> Result<[u8; 32], P2PError> {
+    let remote_x = remote.public.to_bytes();
+    let init = || P2PMessage::Init {
+        ephermal: *myephermal_pub,
+    };
+    // Relay adds a server round-trip, so allow a longer deadline than direct.
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let mut resend = interval(Duration::from_millis(500));
+
+    loop {
+        tokio::select! {
+            _ = resend.tick() => {
+                if let Some(bytes) = frame(init(), my_pubkey, my_signing) {
+                    let _ = out.send(bytes);
+                }
+            }
+            recvd = inbound.recv() => {
+                let Some(bytes) = recvd else { return Err(P2PError::CommunicationError) };
+                let Ok(msg) = rmp_serde::from_slice::<PeerMessage>(&bytes) else {
+                    continue;
+                };
+                if !msg.verify(&remote_x, &remote.verifying) {
+                    continue;
+                }
+                if !frame_is_fresh(msg.timestamp, Utc::now().timestamp()) {
+                    continue;
+                }
+                if let P2PMessage::Init { ephermal } = msg.payload {
+                    return derive_session_key(myephermal_priv, &PublicKey::from(ephermal))
+                        .map_err(|_| P2PError::CryptographicError);
+                }
+            }
+            _ = sleep_until(deadline) => return Err(P2PError::Timeout),
+        }
+    }
+}
+
 #[derive(Debug)]
 pub enum SessionEvent {
     Message { text: String, timestamp: i64 },
@@ -727,6 +778,72 @@ mod tests {
         )
         .await;
         assert_eq!(observed, Some("203.0.113.7:41000".to_string()));
+    }
+
+    #[tokio::test]
+    async fn relay_handshake_derives_fresh_matching_keys() {
+        // Two peers run relay_handshake over crossed channels (a's out -> b's in).
+        // Both must derive the SAME key, and a second run must derive a DIFFERENT
+        // key (fresh ephemeral per session -> no cross-session nonce reuse).
+        async fn one_run() -> [u8; 32] {
+            let a = ident();
+            let b = ident();
+            let (a_eph_priv, a_eph_pub) = generate_x25519();
+            let (b_eph_priv, b_eph_pub) = generate_x25519();
+
+            let (a_out, mut a_out_rx) = mpsc::unbounded_channel::<Vec<u8>>();
+            let (a_in_tx, mut a_in_rx) = mpsc::channel::<Vec<u8>>(100);
+            let (b_out, mut b_out_rx) = mpsc::unbounded_channel::<Vec<u8>>();
+            let (b_in_tx, mut b_in_rx) = mpsc::channel::<Vec<u8>>(100);
+            tokio::spawn(async move {
+                while let Some(f) = a_out_rx.recv().await {
+                    let _ = b_in_tx.send(f).await;
+                }
+            });
+            tokio::spawn(async move {
+                while let Some(f) = b_out_rx.recv().await {
+                    let _ = a_in_tx.send(f).await;
+                }
+            });
+
+            let a_view_b = b.peerpub.clone();
+            let b_view_a = a.peerpub.clone();
+            let (a_x, a_sign) = (a.x_pub, a.signing.clone());
+            let (b_x, b_sign) = (b.x_pub, b.signing.clone());
+
+            let ha = tokio::spawn(async move {
+                relay_handshake(
+                    &a_out,
+                    &mut a_in_rx,
+                    &a_x,
+                    &a_eph_priv,
+                    &a_eph_pub.to_bytes(),
+                    &a_view_b,
+                    &a_sign,
+                )
+                .await
+            });
+            let hb = tokio::spawn(async move {
+                relay_handshake(
+                    &b_out,
+                    &mut b_in_rx,
+                    &b_x,
+                    &b_eph_priv,
+                    &b_eph_pub.to_bytes(),
+                    &b_view_a,
+                    &b_sign,
+                )
+                .await
+            });
+            let ka = ha.await.unwrap().expect("a relay handshake");
+            let kb = hb.await.unwrap().expect("b relay handshake");
+            assert_eq!(ka, kb, "both peers derive the same relay session key");
+            ka
+        }
+
+        let k1 = one_run().await;
+        let k2 = one_run().await;
+        assert_ne!(k1, k2, "each relay session must derive a fresh key");
     }
 
     #[test]
