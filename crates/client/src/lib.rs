@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -25,6 +25,48 @@ use x25519_dalek::PublicKey;
 
 pub fn fingerprint(id: &[u8; 32]) -> String {
     hex::encode(&id[..6])
+}
+
+/// Resolves when the process receives an OS shutdown signal, so callers can run
+/// a graceful shutdown (unannounce presence, close sessions) before exiting:
+/// - **all platforms:** Ctrl-C
+/// - **Unix:** SIGTERM as well (systemd stop, `kill`, `docker stop`)
+/// - **Windows:** Ctrl-Break as well
+pub async fn shutdown_signal() {
+    let ctrl_c = async {
+        let _ = tokio::signal::ctrl_c().await;
+    };
+
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{SignalKind, signal};
+        match signal(SignalKind::terminate()) {
+            Ok(mut term) => {
+                tokio::select! {
+                    _ = ctrl_c => {}
+                    _ = term.recv() => {}
+                }
+            }
+            // SIGTERM handler unavailable — fall back to Ctrl-C only.
+            Err(_) => ctrl_c.await,
+        }
+    }
+
+    #[cfg(windows)]
+    {
+        match tokio::signal::windows::ctrl_break() {
+            Ok(mut brk) => {
+                tokio::select! {
+                    _ = ctrl_c => {}
+                    _ = brk.recv() => {}
+                }
+            }
+            Err(_) => ctrl_c.await,
+        }
+    }
+
+    #[cfg(not(any(unix, windows)))]
+    ctrl_c.await;
 }
 
 fn server_config_path() -> PathBuf {
@@ -322,15 +364,18 @@ async fn send_punch_request(
 async fn drive_retries(
     intents: &mut HashMap<[u8; 32], ConnectIntent>,
     sessions: &SessionMap,
+    connecting: &Connecting,
     keys: &Arc<Keys>,
     server_tx: &mpsc::Sender<ClientToServer>,
     app_tx: &mpsc::UnboundedSender<AppEvent>,
 ) {
     let now = std::time::Instant::now();
-    // Snapshot live-session keys once (avoid locking per peer inside the loop).
-    let live: std::collections::HashSet<[u8; 32]> = sessions.lock().await.keys().copied().collect();
+    // Snapshot live-session keys and in-flight connects once (avoid re-locking
+    // per peer). A peer that is connected OR mid-connect must NOT be re-punched.
+    let live: HashSet<[u8; 32]> = sessions.lock().await.keys().copied().collect();
+    let in_flight: HashSet<[u8; 32]> = connecting.lock().map(|s| s.clone()).unwrap_or_default();
     for (peer, intent) in intents.iter_mut() {
-        let has_session = live.contains(peer);
+        let has_session = live.contains(peer) || in_flight.contains(peer);
         match next_retry_action(intent, has_session, now) {
             RetryAction::Done => {
                 // Connected — reset the ladder ONCE so a later drop retries fresh.
@@ -547,6 +592,28 @@ struct SessionEntry {
 }
 type SessionMap = Arc<Mutex<HashMap<[u8; 32], SessionEntry>>>;
 
+/// Peers with a connect attempt currently in flight (between the hole-punch and
+/// the session landing in `SessionMap`). Every connect trigger checks this so
+/// only ONE `connect_session` runs per peer at a time — otherwise the retry
+/// tick and a second `PunchHole` spawn parallel sessions that race on the UDP
+/// socket and make connecting flap. Plain `std::sync::Mutex` (never held across
+/// an await) so a `Drop` guard can clear the reservation on any return path.
+type Connecting = Arc<std::sync::Mutex<HashSet<[u8; 32]>>>;
+
+/// Clears a peer's in-flight reservation when a connect attempt ends, however
+/// it ends (success, handshake failure, early return).
+struct ConnectingGuard {
+    set: Connecting,
+    peer: [u8; 32],
+}
+impl Drop for ConnectingGuard {
+    fn drop(&mut self) {
+        if let Ok(mut set) = self.set.lock() {
+            set.remove(&self.peer);
+        }
+    }
+}
+
 fn persist_message(
     keys: &Keys,
     peer_pub: &PeerPublic,
@@ -571,6 +638,7 @@ async fn orchestrate(
     udp: Arc<UdpSocket>,
 ) {
     let sessions: SessionMap = Arc::new(Mutex::new(HashMap::new()));
+    let connecting: Connecting = Arc::new(std::sync::Mutex::new(HashSet::new()));
     // Per-peer connect-intents drive P2P retries; persists across relay reconnects.
     let mut intents: HashMap<[u8; 32], ConnectIntent> = HashMap::new();
     let mut backoff_secs = 1u64;
@@ -625,7 +693,7 @@ async fn orchestrate(
         loop {
             tokio::select! {
                 _ = retry_ticker.tick() => {
-                    drive_retries(&mut intents, &sessions, &keys, &server_tx, &app_tx).await;
+                    drive_retries(&mut intents, &sessions, &connecting, &keys, &server_tx, &app_tx).await;
                 }
                 ev = srv_ev_rx.recv() => {
                     match ev {
@@ -635,7 +703,7 @@ async fn orchestrate(
                         }
                         Some(event) => {
                             handle_server_event(
-                                event, &keys, &sessions, &server_tx, &app_tx, &udp,
+                                event, &keys, &sessions, &connecting, &server_tx, &app_tx, &udp,
                                 &mut intents,
                             )
                             .await;
@@ -688,6 +756,7 @@ async fn handle_server_event(
     event: ServerEvent,
     keys: &Arc<Keys>,
     sessions: &SessionMap,
+    connecting: &Connecting,
     server_tx: &mpsc::Sender<ClientToServer>,
     app_tx: &mpsc::UnboundedSender<AppEvent>,
     udp: &Arc<UdpSocket>,
@@ -761,6 +830,7 @@ async fn handle_server_event(
                     ip_port,
                     punchtimestamp,
                     sessions.clone(),
+                    connecting.clone(),
                     app_tx.clone(),
                     udp.clone(),
                     server_tx.clone(),
@@ -986,18 +1056,34 @@ async fn connect_session(
     ip_port: String,
     punchtimestamp: i64,
     sessions: SessionMap,
+    connecting: Connecting,
     app_tx: mpsc::UnboundedSender<AppEvent>,
     udp: Arc<UdpSocket>,
     server_tx: mpsc::Sender<ClientToServer>,
 ) {
     let peer_id = identity_hash(&peer.public, &peer.verifying);
-    if sessions.lock().await.contains_key(&peer_id) {
-        serverclient::debug_log!(
-            "session with {} already active — skipping punch",
-            fingerprint(&peer_id)
-        );
-        return;
+    // Reserve this peer as "connecting". If a session is already live, or another
+    // attempt is already in flight (retry tick, or a second PunchHole triggered by
+    // the peer's own punch request), bail — this is what stops the duplicate,
+    // flapping connections. The guard clears the reservation on every return path.
+    {
+        let live = sessions.lock().await.contains_key(&peer_id);
+        let mut in_flight = match connecting.lock() {
+            Ok(g) => g,
+            Err(_) => return,
+        };
+        if live || !in_flight.insert(peer_id) {
+            serverclient::debug_log!(
+                "connect to {} already live/in-flight — skipping",
+                fingerprint(&peer_id)
+            );
+            return;
+        }
     }
+    let _connecting_guard = ConnectingGuard {
+        set: connecting.clone(),
+        peer: peer_id,
+    };
     let am_first = am_i_first(keys.x25519_pub.as_bytes(), peer.public.as_bytes());
     let (eph_priv, eph_pub) = generate_x25519();
 
@@ -1161,6 +1247,30 @@ mod tests {
             address: None,
             alias: alias.map(str::to_string),
         }
+    }
+
+    #[test]
+    fn connecting_reservation_dedupes_and_clears_on_drop() {
+        // Reserving a peer blocks a second concurrent attempt; dropping the guard
+        // frees it for a future reconnect. This is the invariant that stops the
+        // duplicate/flapping connections.
+        let set: Connecting = Arc::new(std::sync::Mutex::new(HashSet::new()));
+        let peer = [7u8; 32];
+
+        assert!(set.lock().unwrap().insert(peer), "first reserve wins");
+        assert!(!set.lock().unwrap().insert(peer), "second reserve blocked");
+
+        {
+            let _g = ConnectingGuard {
+                set: set.clone(),
+                peer,
+            };
+            assert!(set.lock().unwrap().contains(&peer));
+        }
+        assert!(
+            !set.lock().unwrap().contains(&peer),
+            "guard clears reservation on drop -> reconnect allowed"
+        );
     }
 
     #[test]

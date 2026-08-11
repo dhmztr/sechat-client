@@ -91,12 +91,12 @@ async fn main() -> anyhow::Result<()> {
 
     let sig_cli = cli.clone();
     tokio::spawn(async move {
-        if tokio::signal::ctrl_c().await.is_ok() {
-            println!("\nshutting down…");
-            sig_cli.shutdown();
-            tokio::time::sleep(std::time::Duration::from_millis(300)).await;
-            std::process::exit(0);
-        }
+        // Ctrl-C (all platforms), SIGTERM (Unix), Ctrl-Break (Windows).
+        client::shutdown_signal().await;
+        println!("\nshutting down…");
+        sig_cli.shutdown();
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        std::process::exit(0);
     });
 
     let stdin = BufReader::new(tokio::io::stdin());
