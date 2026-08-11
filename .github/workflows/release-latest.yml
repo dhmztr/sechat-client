@@ -1,0 +1,70 @@
+name: Release latest
+
+# Every push to main: run the test suite, and only if it passes, build the
+# Windows binaries and publish/update a rolling "latest" prerelease. Tagged
+# releases (v*) are handled separately by release.yml.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-latest
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install GUI build deps (iced/winit)
+        run: sudo apt-get update && sudo apt-get install -y libxkbcommon-dev libwayland-dev pkg-config
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Test
+        run: cargo test --workspace --verbose
+
+  release:
+    needs: test
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build release binaries
+        run: cargo build --release --bin gui --bin sechat-cli
+
+      - name: Package
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          Copy-Item target/release/gui.exe        dist/sechat-gui.exe
+          Copy-Item target/release/sechat-cli.exe dist/sechat-cli.exe
+
+      # Move the rolling "latest" tag to this commit so the release points at it.
+      # Tag pushes don't match the branch filter above, so this never re-triggers.
+      - name: Move latest tag
+        shell: bash
+        run: |
+          git tag -f latest
+          git push -f origin latest
+
+      - name: Publish rolling "latest" release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: latest
+          name: Latest build
+          prerelease: true
+          files: dist/*.exe
+          body: |
+            Automated build from `main` @ ${{ github.sha }}
+
+            > ${{ github.event.head_commit.message }}
