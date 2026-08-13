@@ -97,6 +97,20 @@ pub async fn handle_blob(
     Ok(())
 }
 
+/// Decrypt + deserialize + handle one offline blob. Fallible steps grouped so
+/// both the live path and the connect-time drain can uniformly ack-and-skip a
+/// blob that can't be processed.
+async fn process_blob(
+    blob: Vec<u8>,
+    privkey: &StaticSecret,
+    events: &Sender<ServerEvent>,
+) -> Result<(), ClientErrors> {
+    let decrypted = decrypt_blob(blob, privkey).map_err(|_| ClientErrors::DecryptionFailed)?;
+    let payload: BlobPayload = rmp_serde::from_slice(&decrypted)
+        .map_err(|e| ClientErrors::DeserializationFailed(e.to_string()))?;
+    handle_blob(payload, privkey, events).await
+}
+
 pub async fn handle_message(
     msg: ServerToClient,
     privkey: &StaticSecret,
@@ -113,14 +127,14 @@ pub async fn handle_message(
                 blob_id,
                 blob.len()
             );
-            let decrypted_blob = decrypt_blob(blob, privkey).map_err(|_| {
-                crate::debug_log!("blob {blob_id} decrypt FAILED (envelope mismatch/wrong key)");
-                ClientErrors::DecryptionFailed
-            })?;
-            let deserialized_blob: BlobPayload = rmp_serde::from_slice(&decrypted_blob)
-                .map_err(|e| ClientErrors::DeserializationFailed(e.to_string()))?;
-            handle_blob(deserialized_blob, privkey, events).await?;
-            crate::debug_log!("blob {blob_id} handled + acked");
+            // ALWAYS ack, even on failure: a poison blob (undecryptable, from an
+            // unknown/removed peer, or malformed) must not wedge the account —
+            // acking deletes it server-side so it can't loop forever.
+            if let Err(e) = process_blob(blob, privkey, events).await {
+                crate::debug_log!("blob {blob_id} dropped ({e}) — acking to clear it");
+            } else {
+                crate::debug_log!("blob {blob_id} handled");
+            }
             let ack_message = generate_ack_blob(blob_id);
             Ok(Some(ClientToServer::new(ack_message, None)))
         }
@@ -270,11 +284,13 @@ pub async fn server_initial_handshake(
                 blob,
                 timestamp: _,
             } => {
-                let decrypted_blob =
-                    decrypt_blob(blob, privkey).map_err(|_| ClientErrors::DecryptionFailed)?;
-                let deserialized_blob: BlobPayload = rmp_serde::from_slice(&decrypted_blob)
-                    .map_err(|e| ClientErrors::DeserializationFailed(e.to_string()))?;
-                handle_blob(deserialized_blob, privkey, events).await?;
+                // Ack-and-skip on failure so a poison blob can't abort the
+                // handshake and wedge the client into a reconnect loop.
+                if let Err(e) = process_blob(blob, privkey, events).await {
+                    crate::debug_log!(
+                        "blob {blob_id} dropped during connect ({e}) — acking to clear it"
+                    );
+                }
                 ack_blob(blob_id, conn).await?;
             }
             ServerMessage::AuthFailed { reason } => return Err(ClientErrors::AuthFailed(reason)),

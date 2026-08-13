@@ -245,8 +245,12 @@ pub async fn initial_handshake(
     // signed Init from this peer: right after the hole punch the socket still has
     // leftover Ping packets queued, and reading one of those as the handshake
     // message is what used to make direct P2P flaky (fell back to relay).
+    // Send our Init before the select loop (same reason as relay_handshake):
+    // don't return on the peer's buffered Init without having sent ours.
+    let _ = send_peer_message(socket, remote_addr, init(), my_pubkey, my_signing).await;
     let deadline = Instant::now() + Duration::from_secs(5);
     let mut resend = interval(Duration::from_millis(500));
+    resend.tick().await; // consume the immediate first tick (we already sent)
 
     loop {
         tokio::select! {
@@ -291,20 +295,30 @@ pub async fn relay_handshake(
     my_signing: &SigningKey,
 ) -> Result<[u8; 32], P2PError> {
     let remote_x = remote.public.to_bytes();
-    let init = || P2PMessage::Init {
-        ephermal: *myephermal_pub,
+    let send_init = || {
+        if let Some(bytes) = frame(
+            P2PMessage::Init {
+                ephermal: *myephermal_pub,
+            },
+            my_pubkey,
+            my_signing,
+        ) {
+            let _ = out.send(bytes);
+        }
     };
+    // Send our Init BEFORE entering the select — otherwise, if the peer's Init
+    // is already buffered on `inbound`, select! could pick the recv branch first
+    // and we'd return without ever sending ours, hanging the peer (intermittent
+    // relay-handshake timeout).
+    send_init();
     // Relay adds a server round-trip, so allow a longer deadline than direct.
     let deadline = Instant::now() + Duration::from_secs(10);
     let mut resend = interval(Duration::from_millis(500));
+    resend.tick().await; // consume the immediate first tick (we already sent)
 
     loop {
         tokio::select! {
-            _ = resend.tick() => {
-                if let Some(bytes) = frame(init(), my_pubkey, my_signing) {
-                    let _ = out.send(bytes);
-                }
-            }
+            _ = resend.tick() => send_init(),
             recvd = inbound.recv() => {
                 let Some(bytes) = recvd else { return Err(P2PError::CommunicationError) };
                 let Ok(msg) = rmp_serde::from_slice::<PeerMessage>(&bytes) else {
